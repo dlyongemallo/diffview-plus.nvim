@@ -808,10 +808,12 @@ view.x.layout                                   *diffview-config-view.x.layout*
             {diff1_inline}
                 Available for: diff_view, file_history_view
 
-                A single-window unified ("inline") diff. The new-side content
-                is shown in one buffer; deletions are rendered as virtual
-                lines and intra-line added chars are highlighted with
-                `DiffviewDiffAddInline`. Not applicable to merge conflicts.
+                A single-window unified ("inline") diff. The new-side
+                content is shown in one buffer, with deletions rendered as
+                virtual lines. Intra-line changed chars are highlighted
+                according to the configured inline style (see
+                |diffview-config-view.inline|). Not applicable to merge
+                conflicts.
 
                 ┌──────────────┐
                 │              │
@@ -1019,8 +1021,8 @@ view.inline                                     *diffview-config-view.inline*
                 • `"unified"`: proper unified diff (git/GitHub style) —
                   old lines for each hunk (pure deletion or modification)
                   shown above as virtual lines; modified new lines get a
-                  |hl-DiffChange| line background with added chars
-                  highlighted via `DiffviewDiffAddInline`.
+                  |hl-DiffChange| line background with changed chars
+                  highlighted via `DiffviewDiffTextInline`.
                 • `"overleaf"`: Overleaf-editor style. Deleted chars on
                   modified lines are rendered inline as strikethrough
                   virtual text where they used to be; added chars get
@@ -1032,16 +1034,37 @@ view.inline                                     *diffview-config-view.inline*
 
                 Highlight groups used: ~
                     • |hl-DiffAdd|, |hl-DiffChange|, |hl-DiffDelete| via
-                      their `Diffview*` variants.
-                    • `DiffviewDiffAddInline` for the added char ranges
-                      (pure adds or the added side of a modification).
-                      Default: `DiffviewDiffAdd`'s `bg` with no `fg`, so
-                      tree-sitter syntax foreground composes through the
-                      char-level extmark instead of being overridden.
-                      Override with |:hi| to customise.
+                      their `Diffview*` variants, used as line-level
+                      backgrounds. A wholly added line (and the surplus
+                      new lines of an uneven modification) gets a
+                      full-line `DiffviewDiffAdd` with no char-level
+                      overlay; the inline groups below apply only to the
+                      differing characters on a paired/modified row.
+                    • `DiffviewDiffTextInline` for the changed char ranges
+                      on paired ("unified") modifications. Default:
+                      `DiffText`'s `bg` with no `fg`, matching the
+                      side-by-side diff so the change contrasts with the
+                      |hl-DiffChange| backdrop even when a colourscheme
+                      gives `DiffAdd` and `DiffChange` similar backgrounds.
+                      Falls back to `DiffAdd`'s `bg` when the colourscheme
+                      leaves `DiffText` unset.
+                    • `DiffviewDiffAddInline` for the added char ranges in
+                      "overleaf" style. Default: `DiffviewDiffAdd`'s `bg`.
+                      Both inline groups drop `fg` so tree-sitter syntax
+                      foreground composes through the char-level extmark
+                      instead of being overridden. Override either with a
+                      |ColorScheme| autocmd (a plain |:hi| is overwritten
+                      on the next colourscheme change); register the
+                      autocmd after `require("diffview").setup({...})` so
+                      it runs after diffview's own rebuild.
                     • `DiffviewDiffDeleteInline` for overleaf-mode
                       deletions (default: `DiffDelete` colours +
-                      `strikethrough`; override with |:hi| to customise).
+                      `strikethrough`; override as above).
+                    `DiffviewDiffTextInline` does not track later overrides
+                    to |hl-DiffText|: its bg is derived only at `setup()`
+                    and on each |ColorScheme|, and Neovim emits no event
+                    for a standalone `DiffText` change. Override
+                    `DiffviewDiffTextInline` directly instead.
 
             {deletion_highlight} ("text"|"full_width"|"hanging")
                 How far the |hl-DiffDelete| background extends on the

@@ -441,6 +441,71 @@ M.hl_links = {
   DiffText = "DiffText",
 }
 
+-- Compute the inline-overlay `bg` and kept style attrs from `group`'s
+-- colours. `bg` comes from `group`; when the group uses `reverse`/`standout`
+-- the visible bg is actually its `fg` (the swap moves it there), so read that
+-- instead -- otherwise reverse-only colourschemes lose the bg entirely once
+-- we strip `reverse`. Returns `bg` ("NONE" when the group has no usable
+-- background) and the comma-joined style string ("NONE" when empty), with
+-- `reverse`/`standout` dropped (see `derive_inline_hl` for why).
+---@param group string
+---@return string bg
+---@return string style
+local function inline_bg_and_style(group)
+  local kept_attrs = {}
+  local is_reversed = false
+
+  for _, attr in ipairs(vim.split(M.get_style(group) or "", ",")) do
+    if attr == "reverse" or attr == "standout" then
+      is_reversed = true
+    elseif attr ~= "" then
+      kept_attrs[#kept_attrs + 1] = attr
+    end
+  end
+
+  local bg
+  if is_reversed then
+    bg = M.get_fg(group) or M.get_bg(group) or "NONE"
+  else
+    bg = M.get_bg(group) or "NONE"
+  end
+
+  return bg, #kept_attrs > 0 and table.concat(kept_attrs, ",") or "NONE"
+end
+
+-- Derive an inline char-range highlight `target` from `source`'s colours,
+-- used by the `diff1_inline` layout to paint changed/added characters on top
+-- of a paired row (priority-200 extmark). `fg` is dropped so tree-sitter
+-- foreground composes through the extmark instead of being stomped; `reverse`
+-- and `standout` are stripped for the same reason (they swap fg/bg at render
+-- time, which would let the `source` bg paint over the syntax `fg`).
+--
+-- When `source` yields no usable background (e.g. a colourscheme that defines
+-- `DiffAdd`/`DiffChange` but leaves `DiffText` unset), derive from `fallback`
+-- instead so the overlay never regresses to invisible.
+--
+-- Set with `explicit` rather than `default`: a `default` highlight is a no-op
+-- once the group exists, which would pin whatever value was derived at the
+-- first `setup()` (e.g. from a built-in `DiffAdd` active before the user's
+-- colourscheme loaded) and never refresh it on later `ColorScheme` events.
+-- `explicit` rebuilds the group from scratch each call so it always tracks
+-- the active colourscheme.
+---@param source string Source highlight group to derive from.
+---@param target string Target highlight group to (re)define.
+---@param fallback? string Source used when `source` has no usable background.
+local function derive_inline_hl(source, target, fallback)
+  local bg, style = inline_bg_and_style(source)
+  if bg == "NONE" and fallback then
+    bg, style = inline_bg_and_style(fallback)
+  end
+
+  M.hi(target, {
+    bg = bg,
+    style = style,
+    explicit = true,
+  })
+end
+
 function M.update_diff_hl()
   local fg = M.get_fg("DiffDelete", true) or "NONE"
   local bg = M.get_bg("DiffDelete", true) or "NONE"
@@ -461,10 +526,9 @@ function M.update_diff_hl()
   -- is honoured. Runs AFTER the relink above so the final state is read.
   local del_fg = M.get_fg("DiffviewDiffDelete") or "NONE"
   local del_bg = M.get_bg("DiffviewDiffDelete") or "NONE"
-  -- Use `explicit` (not `default`): a `default` highlight is a no-op once the
-  -- group exists, so the colours derived at the first `setup()` would be pinned
-  -- and never refresh on later `ColorScheme` events. `explicit` rebuilds the
-  -- group from scratch each call so it always tracks the active colourscheme.
+  -- `explicit` (not `default`) so the group is rebuilt on every `ColorScheme`
+  -- rather than pinned to the value derived at the first `setup()`; see
+  -- `derive_inline_hl` for the full rationale.
   M.hi("DiffviewDiffDeleteInline", {
     fg = del_fg,
     bg = del_bg,
@@ -472,40 +536,22 @@ function M.update_diff_hl()
     explicit = true,
   })
 
-  -- `diff1_inline` highlight for inserted char ranges (pure adds or the
-  -- added side of a modification). Derives `bg` from `DiffviewDiffAdd`
-  -- (not `DiffviewDiffText`) so inserted bytes share the addition bg at
-  -- any granularity, matching `diff2`. `fg` is dropped so tree-sitter
-  -- foreground composes through the priority-200 extmark instead of
-  -- being stomped. `reverse` and `standout` are stripped from the
-  -- inherited style for the same reason: they swap fg/bg at render
-  -- time, so leaving them in would let the addition `bg` paint over
-  -- the syntax `fg`. When the source uses one of those attrs, the
-  -- visible bg is actually the source `fg` (the swap moves it there),
-  -- so use that instead — otherwise reverse-only colourschemes lose
-  -- the addition bg entirely after we strip `reverse`.
-  local add_style_attrs = {}
-  local add_is_reversed = false
-  for _, attr in ipairs(vim.split(M.get_style("DiffviewDiffAdd") or "", ",")) do
-    if attr == "reverse" or attr == "standout" then
-      add_is_reversed = true
-    elseif attr ~= "" then
-      add_style_attrs[#add_style_attrs + 1] = attr
-    end
-  end
-  local add_bg
-  if add_is_reversed then
-    add_bg = M.get_fg("DiffviewDiffAdd") or M.get_bg("DiffviewDiffAdd") or "NONE"
-  else
-    add_bg = M.get_bg("DiffviewDiffAdd") or "NONE"
-  end
-  local add_style = #add_style_attrs > 0 and table.concat(add_style_attrs, ",") or "NONE"
-  -- `explicit` for the same reason as `DiffviewDiffDeleteInline` above.
-  M.hi("DiffviewDiffAddInline", {
-    bg = add_bg,
-    style = add_style,
-    explicit = true,
-  })
+  -- `diff1_inline` overlays for changed/added char ranges (priority 200,
+  -- layered on the paired row). The two inline styles need different
+  -- backdrops, so each derives from a different source group:
+  --   * "unified" paints the paired row with `DiffviewDiffChange` and
+  --     overlays `DiffviewDiffTextInline`, derived from `DiffText` -- the
+  --     same group the built-in side-by-side diff uses for intra-line
+  --     changes. Deriving from `DiffText` (not `DiffAdd`) keeps the overlay
+  --     visible against the `DiffChange` backdrop even when a colourscheme
+  --     gives `DiffAdd` and `DiffChange` near-identical backgrounds (e.g.
+  --     tokyonight), which would otherwise hide the change. Falls back to
+  --     `DiffAdd` for the rare colourscheme that leaves `DiffText` unset.
+  --   * "overleaf" leaves the row unpainted and overlays
+  --     `DiffviewDiffAddInline`, derived from `DiffAdd` -- the natural
+  --     "added" colour read against the normal background.
+  derive_inline_hl("DiffviewDiffText", "DiffviewDiffTextInline", "DiffviewDiffAdd")
+  derive_inline_hl("DiffviewDiffAdd", "DiffviewDiffAddInline")
 end
 
 function M.setup()

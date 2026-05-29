@@ -15,11 +15,20 @@ describe("diffview.scene.inline_diff", function()
     return api.nvim_buf_get_extmarks(bufnr, inline_diff.ns, 0, -1, { details = true })
   end
 
+  -- Treat both `line_hl_group` (legacy) and `hl_group + hl_eol` (current
+  -- paired-row backdrop, switched in inline_diff.lua so the priority-200 char
+  -- overlay's `bg` can win) as a row-wide line highlight for assertion
+  -- purposes.
   local function line_hls(marks)
     local out = {}
     for _, m in ipairs(marks) do
-      if m[4] and m[4].line_hl_group then
-        out[#out + 1] = { row = m[2], hl = m[4].line_hl_group }
+      local d = m[4]
+      if d then
+        if d.line_hl_group then
+          out[#out + 1] = { row = m[2], hl = d.line_hl_group }
+        elseif d.hl_group and d.hl_eol then
+          out[#out + 1] = { row = m[2], hl = d.hl_group }
+        end
       end
     end
     table.sort(out, function(a, b)
@@ -45,11 +54,14 @@ describe("diffview.scene.inline_diff", function()
     return out
   end
 
-  local function char_ranges(marks)
+  local function char_ranges(marks, hl)
+    hl = hl or "DiffviewDiffAddInline"
     local out = {}
     for _, m in ipairs(marks) do
-      if m[4] and m[4].hl_group == "DiffviewDiffAddInline" then
-        out[#out + 1] = { row = m[2], start = m[3], finish = m[4].end_col }
+      local d = m[4]
+      -- Exclude `hl_eol` marks: those are the row-wide backdrops, not char ranges.
+      if d and d.hl_group == hl and not d.hl_eol then
+        out[#out + 1] = { row = m[2], start = m[3], finish = d.end_col }
       end
     end
     table.sort(out, function(a, b)
@@ -201,16 +213,19 @@ describe("diffview.scene.inline_diff", function()
       assert.are.same({}, virt_line_counts(extmarks(bufnr)))
     end)
 
-    it("marks modified lines with DiffChange and char-level DiffviewDiffAddInline", function()
+    it("marks modified lines with DiffChange and char-level DiffviewDiffTextInline", function()
       local bufnr = fresh_buf({ "hello wonderful world" })
       inline_diff.render(bufnr, { "hello world" }, { "hello wonderful world" })
 
       local hls = line_hls(extmarks(bufnr))
       assert.are.same({ { row = 0, hl = "DiffviewDiffChange" } }, hls)
 
-      -- Expect at least one char-level DiffviewDiffAddInline range covering "wonderful ".
-      local ranges = char_ranges(extmarks(bufnr))
-      assert.is_true(#ranges > 0, "expected DiffviewDiffAddInline extmarks")
+      -- Expect at least one char-level DiffviewDiffTextInline range covering
+      -- "wonderful ". The unified style overlays the `DiffText`-derived group
+      -- (not `DiffviewDiffAddInline`) so the change contrasts with the
+      -- `DiffviewDiffChange` backdrop, matching the side-by-side diff.
+      local ranges = char_ranges(extmarks(bufnr), "DiffviewDiffTextInline")
+      assert.is_true(#ranges > 0, "expected DiffviewDiffTextInline extmarks")
 
       -- Unified style echoes the old line above the modification.
       local vls = virt_line_counts(extmarks(bufnr))
@@ -412,6 +427,248 @@ describe("diffview.scene.inline_diff", function()
         0x88ccff,
         api.nvim_get_hl(0, { name = "DiffviewDiffAddInline", link = false }).bg
       )
+    end)
+  end)
+
+  describe("DiffviewDiffTextInline highlight", function()
+    local hl = require("diffview.hl")
+    local saved
+
+    -- Snapshot every `Diffview*` group plus the source diff groups this block
+    -- mutates so the changes don't leak into later tests (see the matching
+    -- note in the `DiffviewDiffAddInline highlight` block).
+    local function snapshot()
+      local groups = {}
+      for name in pairs(api.nvim_get_hl(0, {})) do
+        if name:match("^Diffview") then
+          groups[name] = api.nvim_get_hl(0, { name = name, link = true })
+        end
+      end
+      for _, name in ipairs({ "DiffAdd", "DiffChange", "DiffText" }) do
+        groups[name] = api.nvim_get_hl(0, { name = name, link = true })
+      end
+      return groups
+    end
+
+    local function restore(groups)
+      for name in pairs(api.nvim_get_hl(0, {})) do
+        if name:match("^Diffview") then
+          api.nvim_set_hl(0, name, {})
+        end
+      end
+      for name, h in pairs(groups) do
+        api.nvim_set_hl(0, name, h)
+      end
+    end
+
+    -- Configure a "tokyonight-like" palette: `DiffAdd` and `DiffChange` share
+    -- a near-identical dark background while `DiffText` is distinct. This is
+    -- the exact shape that hid char-level changes when the unified overlay
+    -- derived from `DiffAdd` over the `DiffChange` paired row.
+    before_each(function()
+      saved = snapshot()
+      api.nvim_set_hl(0, "DiffAdd", { bg = "#2a4556" })
+      api.nvim_set_hl(0, "DiffChange", { bg = "#252a3f" })
+      api.nvim_set_hl(0, "DiffText", { bg = "#394b70" })
+      -- Link the source `Diffview*` groups explicitly rather than relying on
+      -- `hl.setup()`'s default links: a `default` link no-ops when the group
+      -- already exists (as it does after the plugin's own setup), which would
+      -- leave these unlinked and the derived backgrounds nil.
+      api.nvim_set_hl(0, "DiffviewDiffAdd", { link = "DiffAdd" })
+      api.nvim_set_hl(0, "DiffviewDiffChange", { link = "DiffChange" })
+      api.nvim_set_hl(0, "DiffviewDiffText", { link = "DiffText" })
+      api.nvim_set_hl(0, "DiffviewDiffAddInline", {})
+      api.nvim_set_hl(0, "DiffviewDiffTextInline", {})
+      hl.setup()
+    end)
+
+    after_each(function()
+      restore(saved)
+    end)
+
+    it("inherits bg from DiffviewDiffText and omits fg", function()
+      local got = api.nvim_get_hl(0, { name = "DiffviewDiffTextInline", link = false })
+      local diff_text = api.nvim_get_hl(0, { name = "DiffviewDiffText", link = false })
+
+      -- fg must be absent so tree-sitter foreground composes through the
+      -- priority-200 extmark (otherwise it would stomp the syntax fg).
+      assert.is_nil(got.fg)
+      assert.are.equal(diff_text.bg, got.bg)
+    end)
+
+    it("contrasts with the DiffChange backdrop when DiffAdd matches DiffChange", function()
+      -- Regression for issue #205: with a colourscheme whose `DiffAdd` and
+      -- `DiffChange` backgrounds are near-identical (tokyonight), deriving
+      -- the unified char overlay from `DiffAdd` made it blend into the
+      -- paired `DiffviewDiffChange` row. Deriving from `DiffText` restores
+      -- the contrast the built-in side-by-side diff has.
+      local text_inline = api.nvim_get_hl(0, { name = "DiffviewDiffTextInline", link = false })
+      local change = api.nvim_get_hl(0, { name = "DiffviewDiffChange", link = false })
+
+      assert.is_not_nil(text_inline.bg)
+      assert.are_not.equal(change.bg, text_inline.bg)
+      assert.are.equal(0x394b70, text_inline.bg)
+    end)
+
+    it("falls back to DiffAdd when the colourscheme defines no DiffText bg", function()
+      -- A scheme that defines `DiffAdd`/`DiffChange` but leaves `DiffText`
+      -- empty must not regress to an invisible overlay: fall back to the
+      -- `DiffAdd`-derived background (the pre-`DiffText` default) so the
+      -- change stays visible.
+      api.nvim_set_hl(0, "DiffText", {})
+      api.nvim_set_hl(0, "DiffviewDiffText", { link = "DiffText" })
+      hl.setup()
+
+      local got = api.nvim_get_hl(0, { name = "DiffviewDiffTextInline", link = false })
+      local diff_add = api.nvim_get_hl(0, { name = "DiffviewDiffAdd", link = false })
+      assert.is_nil(got.fg)
+      assert.are.equal(diff_add.bg, got.bg)
+    end)
+
+    it("refreshes on re-setup instead of pinning the first colourscheme's value", function()
+      -- Regression: the inline groups were defined with `default = true`, so
+      -- once set they never tracked later `ColorScheme` events (a `default`
+      -- highlight is a no-op when the group already exists). A colourscheme
+      -- switch -- modelled here as a new `DiffText` background plus a fresh
+      -- `hl.setup()`, WITHOUT clearing the group first -- must update the
+      -- derived background rather than keep the stale one.
+      assert.are.equal(
+        0x394b70,
+        api.nvim_get_hl(0, { name = "DiffviewDiffTextInline", link = false }).bg
+      )
+
+      api.nvim_set_hl(0, "DiffText", { bg = "#88ccff" })
+      api.nvim_set_hl(0, "DiffviewDiffText", { link = "DiffText" })
+      hl.setup()
+
+      assert.are.equal(
+        0x88ccff,
+        api.nvim_get_hl(0, { name = "DiffviewDiffTextInline", link = false }).bg
+      )
+    end)
+
+    it("renders the unified char overlay with a bg distinct from the modified row", function()
+      -- End-to-end: a modified line in the unified style overlays
+      -- `DiffviewDiffTextInline` on the changed chars, and its resolved
+      -- background must differ from the `DiffviewDiffChange` paired row.
+      local bufnr = fresh_buf({ "hello wonderful world" })
+      inline_diff.render(bufnr, { "hello world" }, { "hello wonderful world" })
+
+      local row_bg = api.nvim_get_hl(0, { name = "DiffviewDiffChange", link = false }).bg
+      local overlay_bg
+      for _, m in ipairs(extmarks(bufnr)) do
+        if m[4] and m[4].hl_group == "DiffviewDiffTextInline" then
+          overlay_bg = api.nvim_get_hl(0, { name = m[4].hl_group, link = false }).bg
+        end
+      end
+
+      assert.is_not_nil(overlay_bg)
+      assert.are_not.equal(row_bg, overlay_bg)
+    end)
+
+    -- Regression: a single `hl_group + hl_eol` backdrop spanning the whole
+    -- row let Neovim's compositor overpaint the priority-200 char overlay's
+    -- `bg` on the changed-char cells. The renderer now lays the backdrop
+    -- as N+1 segments around the char-overlay ranges so no priority-99
+    -- `bg` sits underneath the overlay.
+    it("paints the row backdrop in gaps around the char overlay range", function()
+      local bufnr = fresh_buf({ "hello wonderful world" })
+      inline_diff.render(bufnr, { "hello world" }, { "hello wonderful world" })
+
+      local marks = extmarks(bufnr)
+      local overlay
+      local backdrops = {}
+      for _, m in ipairs(marks) do
+        local d = m[4] or {}
+        if d.hl_group == "DiffviewDiffTextInline" and not d.hl_eol then
+          overlay = { row = m[2], start = m[3], finish = d.end_col }
+        elseif d.hl_group == "DiffviewDiffChange" then
+          backdrops[#backdrops + 1] = {
+            row = m[2],
+            start = m[3],
+            finish = d.end_col,
+            hl_eol = d.hl_eol or false,
+            end_row = d.end_row,
+          }
+        end
+      end
+
+      assert.is_not_nil(overlay, "expected a DiffviewDiffTextInline overlay")
+      assert.is_true(#backdrops > 0, "expected DiffviewDiffChange backdrop segments")
+
+      -- No backdrop segment may overlap the overlay range; that overlap is
+      -- the exact configuration that lets the compositor's row-bg quirk
+      -- overpaint the overlay.
+      for _, b in ipairs(backdrops) do
+        if b.row == overlay.row then
+          assert.is_true(
+            b.finish <= overlay.start or b.start >= overlay.finish,
+            string.format(
+              "backdrop [%d,%d) overlaps overlay [%d,%d) on row %d",
+              b.start,
+              b.finish,
+              overlay.start,
+              overlay.finish,
+              overlay.row
+            )
+          )
+        end
+      end
+
+      -- Exactly one trailing segment carries `hl_eol = true` so the row's
+      -- background continues past the last char the same way the
+      -- pre-split single backdrop did.
+      local eol_count = 0
+      for _, b in ipairs(backdrops) do
+        if b.row == overlay.row and b.hl_eol then
+          eol_count = eol_count + 1
+          assert.is_true(
+            b.start >= overlay.finish,
+            "the `hl_eol` segment must start at or after the overlay end"
+          )
+        end
+      end
+      assert.are.equal(1, eol_count)
+    end)
+
+    -- Regression: a user override of `DiffviewDiffTextInline { bg = ... }`
+    -- has to survive on the changed-char cells. Before the gap-backdrop
+    -- fix the priority-99 row backdrop sat under the priority-200 overlay
+    -- and the compositor preferred the backdrop's `bg`, so the override
+    -- never showed.
+    it("preserves a user-set `bg` on DiffviewDiffTextInline at the overlay cells", function()
+      api.nvim_set_hl(0, "DiffviewDiffTextInline", { bg = "#ffffff" })
+
+      local bufnr = fresh_buf({ "hello wonderful world" })
+      inline_diff.render(bufnr, { "hello world" }, { "hello wonderful world" })
+
+      -- The override is the highlight on the priority-200 extmark, and no
+      -- priority-99 backdrop overlaps it — so the compositor's view of the
+      -- overlay cells reads bg=white.
+      local marks = extmarks(bufnr)
+      local overlay
+      for _, m in ipairs(marks) do
+        local d = m[4] or {}
+        if d.hl_group == "DiffviewDiffTextInline" and not d.hl_eol then
+          overlay = { row = m[2], start = m[3], finish = d.end_col }
+          break
+        end
+      end
+      assert.is_not_nil(overlay)
+      assert.are.equal(
+        0xffffff,
+        api.nvim_get_hl(0, { name = "DiffviewDiffTextInline", link = false }).bg
+      )
+
+      for _, m in ipairs(marks) do
+        local d = m[4] or {}
+        if d.hl_group == "DiffviewDiffChange" and m[2] == overlay.row then
+          assert.is_true(
+            d.end_col <= overlay.start or m[3] >= overlay.finish,
+            "backdrop must not overlap the overlay carrying the user bg"
+          )
+        end
+      end
     end)
   end)
 
@@ -1146,7 +1403,8 @@ describe("diffview.scene.inline_diff", function()
       local out = { hl = 0, inline = 0 }
       for _, m in ipairs(marks) do
         local d = m[4]
-        if d.hl_group == "DiffviewDiffAddInline" then
+        -- Unified style overlays the `DiffText`-derived group on changed chars.
+        if d.hl_group == "DiffviewDiffTextInline" then
           out.hl = out.hl + 1
         end
         if d.virt_text and d.virt_text_pos == "inline" then
@@ -1160,7 +1418,7 @@ describe("diffview.scene.inline_diff", function()
       local bufnr = fresh_buf({ "hello brave world" })
       inline_diff.render(bufnr, { "hello world" }, { "hello brave world" })
       local t = text_extmarks(bufnr)
-      assert.is_true(t.hl > 0, "expected DiffviewDiffAddInline on added chars for similar lines")
+      assert.is_true(t.hl > 0, "expected DiffviewDiffTextInline on added chars for similar lines")
     end)
 
     it("skips char-level highlights when lines are too dissimilar (unified)", function()
@@ -1172,7 +1430,11 @@ describe("diffview.scene.inline_diff", function()
       local bufnr = fresh_buf({ new })
       inline_diff.render(bufnr, { old }, { new })
       local t = text_extmarks(bufnr)
-      assert.are.equal(0, t.hl, "expected no DiffviewDiffAddInline fragments on dissimilar pairing")
+      assert.are.equal(
+        0,
+        t.hl,
+        "expected no DiffviewDiffTextInline fragments on dissimilar pairing"
+      )
     end)
 
     it("skips inline deletions in overleaf for dissimilar pairings", function()
@@ -1215,7 +1477,7 @@ describe("diffview.scene.inline_diff", function()
       local new_line = '  "x": { "commit": "cf4c30892644f01ebfb1e248eeca9e259856f9dc" }'
       local bufnr = fresh_buf({ new_line })
       inline_diff.render(bufnr, { old_line }, { new_line })
-      local cr = char_ranges(extmarks(bufnr))
+      local cr = char_ranges(extmarks(bufnr), "DiffviewDiffTextInline")
       assert.are.equal(1, #cr)
       local hash_start = string.find(new_line, "cf4c3089", 1, true) - 1
       assert.are.equal(0, cr[1].row)
@@ -1256,13 +1518,13 @@ describe("diffview.scene.inline_diff", function()
 
     it("refines 1:1 word replacements with char-level precision", function()
       -- "recieve" → "receive" is one word-level 1:1 pair, so the sub-diff
-      -- kicks in. DiffviewDiffAddInline highlights should cover only the moved letter
-      -- rather than the whole word.
+      -- kicks in. Unified char highlights (DiffviewDiffTextInline) should cover
+      -- only the moved letter rather than the whole word.
       local bufnr = fresh_buf({ "receive" })
       inline_diff.render(bufnr, { "recieve" }, { "receive" })
 
-      local ranges = char_ranges(extmarks(bufnr))
-      assert.is_true(#ranges > 0, "expected char-level DiffviewDiffAddInline inside the word")
+      local ranges = char_ranges(extmarks(bufnr), "DiffviewDiffTextInline")
+      assert.is_true(#ranges > 0, "expected char-level DiffviewDiffTextInline inside the word")
       for _, r in ipairs(ranges) do
         assert.is_true(
           r.finish - r.start < #"receive",

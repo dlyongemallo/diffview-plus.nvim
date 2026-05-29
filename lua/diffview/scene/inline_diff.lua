@@ -553,6 +553,13 @@ end
 -- the span (the full line for word-level hunks, a single token for
 -- refined char-level sub-hunks) and serves as the deletion-anchor
 -- fallback when an index falls off the map.
+--
+-- When `ranges` is supplied, every char-overlay byte range
+-- (`{start_col, end_col}`) this call emits is appended to it. The caller
+-- uses that list to lay the row backdrop with gaps so its priority-99
+-- `bg` doesn't sit under the priority-200 overlay (which would let the
+-- backdrop's `bg` overpaint the overlay's on the changed cells — see
+-- `lay_backdrop_with_gaps`).
 ---@param bufnr integer
 ---@param new_row integer
 ---@param base_byte integer
@@ -562,6 +569,8 @@ end
 ---@param new_count integer
 ---@param del_text string Joined deleted units ("" if none).
 ---@param inline_del boolean
+---@param add_hl string Highlight group for the inserted char range.
+---@param ranges? integer[][] Out-parameter: each emitted overlay's `{start_col, end_col}` is appended.
 local function render_hunk(
   bufnr,
   new_row,
@@ -571,7 +580,9 @@ local function render_hunk(
   new_start,
   new_count,
   del_text,
-  inline_del
+  inline_del,
+  add_hl,
+  ranges
 )
   if new_count > 0 then
     -- A hunk is a contiguous range, so emit one extmark spanning all units
@@ -579,11 +590,16 @@ local function render_hunk(
     local first = byte_map[new_start]
     local last = byte_map[new_start + new_count - 1]
     if first and last then
-      api.nvim_buf_set_extmark(bufnr, M.ns, new_row, base_byte + first.byte, {
-        end_col = base_byte + last.byte + last.byte_len,
-        hl_group = "DiffviewDiffAddInline",
+      local s = base_byte + first.byte
+      local e = base_byte + last.byte + last.byte_len
+      api.nvim_buf_set_extmark(bufnr, M.ns, new_row, s, {
+        end_col = e,
+        hl_group = add_hl,
         priority = 200,
       })
+      if ranges then
+        ranges[#ranges + 1] = { s, e }
+      end
     else
       -- Defensive fallback when byte_map can't resolve both ends — should
       -- not happen with a well-formed UTF-8 string but handle it so partial
@@ -591,11 +607,16 @@ local function render_hunk(
       for k = new_start, new_start + new_count - 1 do
         local info = byte_map[k]
         if info then
-          api.nvim_buf_set_extmark(bufnr, M.ns, new_row, base_byte + info.byte, {
-            end_col = base_byte + info.byte + info.byte_len,
-            hl_group = "DiffviewDiffAddInline",
+          local s = base_byte + info.byte
+          local e = base_byte + info.byte + info.byte_len
+          api.nvim_buf_set_extmark(bufnr, M.ns, new_row, s, {
+            end_col = e,
+            hl_group = add_hl,
             priority = 200,
           })
+          if ranges then
+            ranges[#ranges + 1] = { s, e }
+          end
         end
       end
     end
@@ -639,26 +660,29 @@ end
 ---@param old_line string
 ---@param new_line string
 ---@param inline_del boolean Render deleted units as inline virt_text.
----@return "ok"|"noop"|"skipped" # `ok`: rendered; `noop`: identical (nothing to do); `skipped`: fragmented, caller may want to fall back.
-local function render_char_highlights(bufnr, new_row, old_line, new_line, inline_del)
+---@param add_hl string Highlight group for changed/added char ranges.
+---@return "ok"|"noop"|"skipped" result `ok`: rendered; `noop`: identical (nothing to do); `skipped`: fragmented, caller may want to fall back.
+---@return integer[][] ranges Each `{start_col, end_col}` covers a char-overlay extmark this call emitted. Empty unless `result == "ok"`; the caller uses it to lay the row backdrop with gaps so the priority-200 overlay's `bg` is not overpainted by the priority-99 backdrop. Ranges may overlap when a paired line refines through `render_hunk`'s defensive byte-map fallback path; the merging in `lay_backdrop_with_gaps` collapses them.
+local function render_char_highlights(bufnr, new_row, old_line, new_line, inline_del, add_hl)
+  local ranges = {}
   if old_line == new_line then
-    return "noop"
+    return "noop", ranges
   end
   -- Blank-to-nonblank (or vice versa) has no meaningful char-level diff, but
   -- the lines differ: signal `skipped` so the caller's fallback path still
   -- renders a line highlight / echoes the old line in overleaf style.
   if old_line == "" or new_line == "" then
-    return "skipped"
+    return "skipped", ranges
   end
 
   local old_tokens = tokenize(old_line)
   local new_tokens, new_map = tokenize(new_line)
   local hunks = diff_units(old_tokens, new_tokens)
   if #hunks == 0 then
-    return "noop"
+    return "noop", ranges
   end
   if #hunks > INTRALINE_MAX_HUNKS then
-    return "skipped"
+    return "skipped", ranges
   end
 
   local new_line_len = #new_line
@@ -722,7 +746,9 @@ local function render_char_highlights(bufnr, new_row, old_line, new_line, inline
               sns,
               snc,
               del_text,
-              inline_del
+              inline_del,
+              add_hl,
+              ranges
             )
           end
         end
@@ -747,12 +773,88 @@ local function render_char_highlights(bufnr, new_row, old_line, new_line, inline
         new_start,
         new_count,
         del_text,
-        inline_del
+        inline_del,
+        add_hl,
+        ranges
       )
     end
   end
 
-  return "ok"
+  return "ok", ranges
+end
+
+-- Paint a row-wide backdrop in segments around the char-overlay ranges
+-- `ranges` so the priority-99 backdrop's `bg` is never laid under a
+-- priority-200 char overlay. Without this split, Neovim's compositor
+-- prefers the backdrop's `bg` over the higher-priority overlay's `bg`
+-- on cells where they coexist (a quirk that also affected
+-- `line_hl_group`; switching to `hl_group + hl_eol` was an earlier
+-- attempt at the workaround but only mitigated `fg`, not `bg`). Each
+-- gap is an ordinary `hl_group` extmark; the final segment additionally
+-- carries `hl_eol = true` so the row continues to fill past EOL the way
+-- a single full-row backdrop would.
+--
+-- The N+1 backdrop extmarks per row (where N = #ranges) are individually
+-- shorter than the single full-row extmark they replace, so total work
+-- is similar. Ranges may overlap or be unsorted on input (the defensive
+-- per-byte fallback in `render_hunk` can emit them); they are sorted and
+-- merged before emitting.
+-- TODO: revisit when neovim/neovim#31151 lands — at that point a single
+-- `line_hl_group` at the right priority should suffice without the
+-- gap-splitting.
+---@param bufnr integer
+---@param row integer 0-indexed.
+---@param line_hl string Backdrop highlight group.
+---@param ranges integer[][] Char-overlay byte ranges (`{start_col, end_col}`).
+local function lay_backdrop_with_gaps(bufnr, row, line_hl, ranges)
+  -- Sort + merge a defensive copy of the input so overlapping/touching
+  -- ranges (possible via `render_hunk`'s defensive per-byte fallback)
+  -- don't produce zero-length gap segments. With an empty input, `merged`
+  -- stays empty and the trailing extmark below paints the full row.
+  local merged = {}
+  if #ranges > 0 then
+    local sorted = {}
+    for _, r in ipairs(ranges) do
+      sorted[#sorted + 1] = { r[1], r[2] }
+    end
+    table.sort(sorted, function(a, b)
+      return a[1] < b[1]
+    end)
+
+    merged[1] = sorted[1]
+    for i = 2, #sorted do
+      local last = merged[#merged]
+      local cur = sorted[i]
+      if cur[1] <= last[2] then
+        if cur[2] > last[2] then
+          last[2] = cur[2]
+        end
+      else
+        merged[#merged + 1] = cur
+      end
+    end
+  end
+
+  local cursor = 0
+  for _, r in ipairs(merged) do
+    if r[1] > cursor then
+      api.nvim_buf_set_extmark(bufnr, M.ns, row, cursor, {
+        end_col = r[1],
+        hl_group = line_hl,
+        priority = 99,
+      })
+    end
+    cursor = r[2]
+  end
+  -- Trailing segment, including the `hl_eol` fill past the last byte
+  -- (also covers the no-ranges case as a single full-row backdrop).
+  api.nvim_buf_set_extmark(bufnr, M.ns, row, cursor, {
+    end_row = row + 1,
+    end_col = 0,
+    hl_group = line_hl,
+    hl_eol = true,
+    priority = 99,
+  })
 end
 
 -- A single tree-sitter capture span on one line: `{col_start, col_end,
@@ -1585,6 +1687,7 @@ end
 ---@field inline_del boolean Render paired char-level deletions as inline virt_text.
 ---@field echo_paired_old boolean Emit full old content as virt_lines above paired modifications.
 ---@field change_line_hl? string Line highlight on paired modified rows, or `nil` to skip.
+---@field add_inline_hl string Highlight group for changed/added char ranges on paired rows.
 
 ---@type table<string, InlineDiffStyle>
 local STYLES = {
@@ -1594,6 +1697,10 @@ local STYLES = {
     inline_del = false,
     echo_paired_old = true,
     change_line_hl = "DiffviewDiffChange",
+    -- Changed chars sit on the `DiffviewDiffChange` paired row, so use the
+    -- `DiffText`-derived overlay (as the built-in side-by-side diff does) to
+    -- stay legible against that backdrop.
+    add_inline_hl = "DiffviewDiffTextInline",
   },
   -- Overleaf style: deletions rendered inline as strikethrough virt_text so
   -- the reader sees the change in flow. No block echo, no line hl — the
@@ -1603,6 +1710,9 @@ local STYLES = {
     inline_del = true,
     echo_paired_old = false,
     change_line_hl = nil,
+    -- No line backdrop; inserted chars read as additions over the normal
+    -- background, so use the `DiffAdd`-derived overlay.
+    add_inline_hl = "DiffviewDiffAddInline",
   },
 }
 
@@ -1793,22 +1903,30 @@ function M.render(bufnr, old_lines, new_lines, opts)
         local row = new_start - 1 + k
         local ol = old_lines[old_start + k] or ""
         local nl = new_lines[new_start + k] or ""
-        local char_result = render_char_highlights(bufnr, row, ol, nl, style.inline_del)
+        local char_result, char_ranges =
+          render_char_highlights(bufnr, row, ol, nl, style.inline_del, style.add_inline_hl)
 
-        -- `"skipped"` draws no `DiffviewDiffAddInline` overlay, so the
-        -- subtle `DiffviewDiffChange` backdrop alone would be a bare
-        -- smudge. Treat as a pure addition — the deletion is still
-        -- echoed above (unified unconditionally; overleaf via the
-        -- fallback below).
+        -- `"skipped"` draws no char-level overlay, so the subtle
+        -- `DiffviewDiffChange` backdrop alone would be a bare smudge. Treat
+        -- as a pure addition — the deletion is still echoed above (unified
+        -- unconditionally; overleaf via the fallback below).
         local line_hl = style.change_line_hl
         if char_result == "skipped" then
           line_hl = "DiffviewDiffAdd"
+          char_ranges = {}
         end
         if line_hl then
-          api.nvim_buf_set_extmark(bufnr, M.ns, row, 0, {
-            line_hl_group = line_hl,
-            priority = 100,
-          })
+          -- Paint the row backdrop in gaps around the char overlays so the
+          -- priority-99 backdrop's `bg` is never laid under the priority-200
+          -- overlay (otherwise the compositor lets the lower-priority `bg`
+          -- overpaint the overlay's on the changed cells -- a quirk that
+          -- previously hid bg overrides on `DiffviewDiffTextInline` under
+          -- colourschemes whose `DiffviewDiffChange` and `DiffText` differ
+          -- in bg, e.g. tokyonight). Priority 99 keeps the backdrop one
+          -- below tree-sitter's default 100, so syntax `fg` still wins
+          -- ties on the row (the priority-200 char overlay still wins on
+          -- changed cells).
+          lay_backdrop_with_gaps(bufnr, row, line_hl, char_ranges)
         end
 
         -- Overleaf fallback: when char-level was skipped and we're not
