@@ -1,6 +1,6 @@
-# Diffview.nvim
+# diffview+
 
-> **Note:** This is an **actively maintained fork** of [sindrets/diffview.nvim](https://github.com/sindrets/diffview.nvim) with bug fixes and improvements applied. The original repository has not been updated since June 2024. See [`doc/diffview_changelog.txt`](doc/diffview_changelog.txt) (`:h diffview.changelog`) for breaking changes and notable additions.
+> **Note:** This is an **actively maintained fork** of [sindrets/diffview.nvim](https://github.com/sindrets/diffview.nvim) with bug fixes and improvements applied. See [`doc/diffview_changelog.txt`](doc/diffview_changelog.txt) (`:h diffview.changelog`) for breaking changes and notable additions.
 
 ## Introduction
 
@@ -28,7 +28,7 @@ Supported VCS (at least one required):
 ```lua
 -- Lazy
 {
-    "dlyongemallo/diffview.nvim",
+    "dlyongemallo/diffview-plus.nvim",
     version = "*",
     -- optional: lazy-load on command
     -- cmd = {
@@ -43,7 +43,7 @@ Supported VCS (at least one required):
 
 ```vim
 " Plug
-Plug 'dlyongemallo/diffview.nvim'
+Plug 'dlyongemallo/diffview-plus.nvim'
 ```
 
 ## Quick Start

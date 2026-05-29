@@ -1,4 +1,4 @@
--- Public API surface for diffview.nvim.
+-- Public API surface for diffview+.
 --
 -- Usage:
 --   local api = require("diffview.api")

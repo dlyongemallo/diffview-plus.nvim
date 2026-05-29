@@ -43,7 +43,7 @@ function M.notify(msg, level, schedule)
     logger:error(msg)
   end
 
-  vim.notify(msg, level, { title = "diffview.nvim" })
+  vim.notify(msg, level, { title = "diffview+" })
 end
 
 ---@param msg string|string[]

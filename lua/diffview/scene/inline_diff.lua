@@ -3,7 +3,7 @@
 -- The inline strikethrough rendering for deleted characters in the
 -- "overleaf" style is adapted from the sample code shared by
 -- @tienlonghungson in issue #109:
--- <https://github.com/dlyongemallo/diffview.nvim/issues/109>
+-- <https://github.com/dlyongemallo/diffview-plus.nvim/issues/109>
 -- which was itself modified from inlinediff-nvim:
 -- <https://github.com/YouSame2/inlinediff-nvim>
 --
@@ -1327,7 +1327,7 @@ local function maybe_warn_leak(bufnr, winid)
     if w ~= winid then
       leak_warned = true
       vim.notify(
-        "diffview.nvim: `diff1_inline` highlights may leak into other windows showing this file. "
+        "diffview+: `diff1_inline` highlights may leak into other windows showing this file. "
           .. "Upgrade to Neovim 0.11+ to fix.",
         vim.log.levels.WARN
       )

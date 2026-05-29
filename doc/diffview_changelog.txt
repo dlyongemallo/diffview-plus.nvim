@@ -65,7 +65,7 @@ See also |diffview.changelog-jj-adapter| for the Jujutsu adapter.
 
                                                 *diffview.changelog-breaking-panel-show*
 
-PR: https://github.com/dlyongemallo/diffview.nvim/pull/165
+PR: https://github.com/dlyongemallo/diffview-plus.nvim/pull/165
 
 `file_panel.show` previously controlled both `:DiffviewOpen` and
 `:DiffviewFileHistory`. Visibility is now split: set `file_panel.show`
@@ -74,7 +74,7 @@ for file-history views.
 
                                                 *diffview.changelog-pin-local*
 
-PR: https://github.com/dlyongemallo/diffview.nvim/pull/158
+PR: https://github.com/dlyongemallo/diffview-plus.nvim/pull/158
 
 The new `:DiffviewFileHistory --pin-local` flag pins the right-hand
 side of the diff to the working-tree copy of the followed path while
@@ -87,7 +87,7 @@ Git only. Cannot be combined with `--base`.
 
                                                 *diffview.changelog-diff1-inline*
 
-PR: https://github.com/dlyongemallo/diffview.nvim/pull/120
+PR: https://github.com/dlyongemallo/diffview-plus.nvim/pull/120
 
 The new `diff1_inline` layout renders unified diffs in a single window
 via extmark overlays. Tree-sitter highlights are preserved on both
@@ -102,9 +102,9 @@ Deletion highlight is configurable via `view.inline.deletion_highlight`.
 
                                                 *diffview.changelog-multi-selection*
 
-PRs: https://github.com/dlyongemallo/diffview.nvim/pull/36,
-     https://github.com/dlyongemallo/diffview.nvim/pull/45,
-     https://github.com/dlyongemallo/diffview.nvim/pull/46
+PRs: https://github.com/dlyongemallo/diffview-plus.nvim/pull/36,
+     https://github.com/dlyongemallo/diffview-plus.nvim/pull/45,
+     https://github.com/dlyongemallo/diffview-plus.nvim/pull/46
 
 The file panel supports multi-file selection for batch operations.
 Default keymaps: `w` to toggle a selection on the current file, `C`
@@ -117,7 +117,7 @@ placement are configurable via `file_panel.mark_placement` and
 
                                                 *diffview.changelog-breaking-nvim-010*
 
-PR: https://github.com/dlyongemallo/diffview.nvim/pull/11
+PR: https://github.com/dlyongemallo/diffview-plus.nvim/pull/11
 
 The minimum required Neovim version has been bumped to 0.10.
 
@@ -317,14 +317,14 @@ update, just make sure plenary is loaded before diffview. Examples:
 PR: https://github.com/sindrets/diffview.nvim/pull/64
 
 This PR introduces some small breaking changes in the config, and for plugins
-integrating diffview.nvim.
+integrating diffview+.
 
 The `use_icons` config table key has been moved out of the `file_panel` table.
 This has been done because `use_icons` now applies to other contexts than just
 the file panel. The correct way to configure this now is to set `use_icons`
 somewhere from the top level of the config table.
 
-For plugins integrating diffview.nvim:
+For plugins integrating diffview+:
 Several of the git utilities have been refactored into their own namespace
 (`lua/diffview/git/`). I (STS) felt this was necessary due to the growing
 scope of the plugin. Most notably this means that the `Rev` class now resides

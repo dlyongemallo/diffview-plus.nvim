@@ -15,7 +15,7 @@ local uv = vim.uv
 local function err(msg)
   msg = msg:gsub("'", "''")
   vim.cmd("echohl Error")
-  vim.cmd(string.format("echom '[diffview.nvim] %s'", msg))
+  vim.cmd(string.format("echom '[diffview+] %s'", msg))
   vim.cmd("echohl NONE")
 end
 

@@ -26,7 +26,7 @@ is different from comparing directly against `origin/HEAD` if the branches have
 diverged, and is usually what you want when comparing changes in a PR. For more
 info see the section on "SPECIFYING REVISIONS" in `man git-rev-parse(1)`.
 
-The `--imply-local` flag option will here make diffview.nvim show the working
+The `--imply-local` flag option will here make diffview+ show the working
 tree versions[^1] of the changed files on the right side of the diff. This means
 that if you have tools such as LSP set up, it will work for all the diff buffers
 on the right side, giving you access to LSP features - such as diagnostics and
@@ -94,7 +94,7 @@ following command will list all stashes in the file history panel:
 
 ## Committing
 
-Creating commits from within nvim is a solved problem, and as such diffview.nvim
+Creating commits from within nvim is a solved problem, and as such diffview+
 does not reinvent the wheel here. Here are a few different ways in which you can
 create a new commit from within the editor:
 

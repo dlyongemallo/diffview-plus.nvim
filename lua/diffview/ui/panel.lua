@@ -356,7 +356,7 @@ function Panel:open()
     self.winid = vim.api.nvim_open_win(self.bufid, false, utils.sanitize_float_config(config))
     if self.winid == 0 then
       self.winid = nil
-      error("[diffview.nvim] Failed to open float panel window!")
+      error("[diffview+] Failed to open float panel window!")
     end
   end
 

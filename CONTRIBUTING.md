@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping improve `diffview.nvim`. This document covers the local setup
+Thanks for helping improve `diffview+`. This document covers the local setup
 and a few conventions worth knowing before opening a PR.
 
 ## Development setup

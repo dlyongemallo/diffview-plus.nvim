@@ -1,13 +1,13 @@
-*diffview.txt* Diffview.nvim
+*diffview.txt* diffview+
 
 Single tabpage interface to easily cycle through diffs for all modified files
 for any git rev.
 
-Author: Sindre T. Strøm
+Authors: Sindre T. Strøm (diffview.nvim), David Yonge-Mallo (diffview+)
 
 ==============================================================================
 
-INTRODUCTION                                    *diffview.nvim* *diffview*
+INTRODUCTION                  *diffview.nvim* *diffview* *diffview-plus*
 
 Vim's diff mode is pretty good, but there is no convenient way to quickly bring
 up all modified files in a diffsplit. This plugin aims to provide a simple,
