@@ -46,7 +46,8 @@ local function render_file_stats(comp, stats, stat_style)
   local show_bar = stat_style == "bar" or stat_style == "both"
 
   if show_number then
-    comp:add_text(" " .. stats.additions, "DiffviewFilePanelInsertions")
+    comp:add_text(" ")
+    comp:add_text(tostring(stats.additions), "DiffviewFilePanelInsertions")
     comp:add_text(", ")
     comp:add_text(tostring(stats.deletions), "DiffviewFilePanelDeletions")
   end

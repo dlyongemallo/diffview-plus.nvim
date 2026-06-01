@@ -123,7 +123,8 @@ local function render_file(conf, panel, comp, show_path, depth, sign_pad)
 
   if file.stats then
     if file.stats.additions then
-      comp:add_text(" " .. file.stats.additions, "DiffviewFilePanelInsertions")
+      comp:add_text(" ")
+      comp:add_text(tostring(file.stats.additions), "DiffviewFilePanelInsertions")
       comp:add_text(", ")
       comp:add_text(tostring(file.stats.deletions), "DiffviewFilePanelDeletions")
     elseif file.stats.conflicts then
