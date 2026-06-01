@@ -519,6 +519,56 @@ describe("diffview.scene.inline_diff", function()
         assert.are.equal("DiffviewDiffDeleteInline", h)
       end
     end)
+
+    -- Commenting-out a block prepends `-- ` to N lines and inserts a header
+    -- line above them, producing an N:N+1 modify hunk. With positional
+    -- pairing inside one hunk the new header pairs with the first old line
+    -- and every subsequent pair becomes a shifted, dissimilar pair — so the
+    -- char-level diff fragments, returns `"skipped"`, and the block renders
+    -- as a full add+delete instead of inline `-- ` insertions. Linematch
+    -- splits the hunk into a pure-add for the header plus an aligned N:N
+    -- modify, which the renderer can pair positionally without skipping.
+    it("renders a commented-out block as inline `-- ` insertions with linematch", function()
+      local bufnr = fresh_buf({
+        "-- TEMP: disable overrides.",
+        "-- vim.api.nvim_set_hl(0, 'A')",
+        "-- vim.api.nvim_set_hl(0, 'B')",
+      })
+      inline_diff.render(bufnr, { "vim.api.nvim_set_hl(0, 'A')", "vim.api.nvim_set_hl(0, 'B')" }, {
+        "-- TEMP: disable overrides.",
+        "-- vim.api.nvim_set_hl(0, 'A')",
+        "-- vim.api.nvim_set_hl(0, 'B')",
+      }, { style = "overleaf", linematch = 60 })
+
+      local marks = extmarks(bufnr)
+      -- The header is a pure addition and should be the only row carrying a
+      -- full `DiffviewDiffAdd` line highlight; the commented lines below
+      -- must NOT pick up that backdrop (which is the symptom of the
+      -- positional-pairing fallback).
+      local add_rows = {}
+      for _, h in ipairs(line_hls(marks)) do
+        if h.hl == "DiffviewDiffAdd" then
+          add_rows[#add_rows + 1] = h.row
+        end
+      end
+      assert.are.same({ 0 }, add_rows)
+
+      -- Each commented line carries a `DiffviewDiffAddInline` extmark over
+      -- the inserted `-- ` prefix.
+      local adds = char_ranges(marks, "DiffviewDiffAddInline")
+      local rows_with_add = {}
+      for _, a in ipairs(adds) do
+        rows_with_add[a.row] = true
+      end
+      assert.is_true(rows_with_add[1], "expected inline add on row 1")
+      assert.is_true(rows_with_add[2], "expected inline add on row 2")
+
+      -- No paired old lines are echoed as deletion virt_lines (the
+      -- skipped-fallback symptom): only the inline strikethrough virt_text
+      -- representing the empty old prefix would appear, and even that is
+      -- empty for a pure prefix insertion.
+      assert.are.same({}, virt_line_counts(marks))
+    end)
   end)
 
   describe("deletion_highlight", function()

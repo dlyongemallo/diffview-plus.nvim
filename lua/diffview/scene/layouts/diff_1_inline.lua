@@ -23,17 +23,19 @@ local M = {}
 ---`'diffopt'` forces `vim.diff` to disable the heuristic instead of falling
 ---back to whatever default the vim.diff implementation currently uses.
 ---
----`linematch` is intentionally not forwarded. In `result_type = "indices"`
----mode it splits a single modify-hunk into smaller hunks that pair lines by
----similarity rather than by position — e.g. an old `-- foo = X, -- comment`
----line gets paired with a new `-- bar = Y, -- comment` line further down
----because both share the `-- ` prefix and a `, -- ` separator, even though
----the natural (positional) pair is the new uncommented `foo = X` line. The
----inline renderer pairs lines positionally inside each hunk, so a non-zero
----linematch causes deletions to render anchored against the wrong new line.
+---`linematch` defaults to 60 (git's default) so a single modify-hunk whose
+---old and new sides differ in length is split into properly-aligned
+---sub-hunks. Without it, the renderer pairs lines positionally inside the
+---one large hunk, so e.g., commenting-out a block (8 old lines vs 9 new
+---lines: a new TEMP header plus 8 lines each gaining a `-- ` prefix) pairs
+---every `vim.api.nvim_set_hl(...)` line with the wrong commented copy,
+---producing > `INTRALINE_MAX_HUNKS` per pair and falling back to whole-line
+---add+delete instead of showing only the `-- ` insertion. The user's
+---`'diffopt'` `linematch:N` entry overrides this default (including `0` to
+---opt back into positional pairing).
 ---@return InlineDiffOpts
 local function effective_diffopt()
-  local out = { indent_heuristic = false }
+  local out = { indent_heuristic = false, linematch = 60 }
   local diffopt = vim.opt.diffopt --[[@as vim.Option]]
   for _, v in
     ipairs(diffopt:get() --[[@as string[] ]])
@@ -41,6 +43,8 @@ local function effective_diffopt()
     local key, val = v:match("^([%w_-]+):(.+)$")
     if key == "algorithm" then
       out.algorithm = val
+    elseif key == "linematch" then
+      out.linematch = tonumber(val)
     elseif v == "indent-heuristic" then
       out.indent_heuristic = true
     elseif v == "iwhite" then

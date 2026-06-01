@@ -1769,12 +1769,22 @@ describe("diffview.scene.layouts.diff_1_inline diffopt forwarding", function()
     eq(true, effective_diffopt().indent_heuristic)
   end)
 
-  it("never forwards linematch even when set in 'diffopt'", function()
-    set_diffopt({ "linematch:60", "iblank" })
+  it("defaults linematch to 60 when absent from 'diffopt'", function()
+    set_diffopt({ "internal" })
+    eq(60, effective_diffopt().linematch)
+  end)
+
+  it("forwards linematch:N from 'diffopt'", function()
+    set_diffopt({ "linematch:30", "iblank" })
     local opts = effective_diffopt()
-    assert.is_nil(opts.linematch)
+    eq(30, opts.linematch)
     -- Sanity-check that other entries still parse (confirms the loop ran).
     eq(true, opts.ignore_blank_lines)
+  end)
+
+  it("honours an explicit linematch:0 to opt out of line-matching", function()
+    set_diffopt({ "linematch:0" })
+    eq(0, effective_diffopt().linematch)
   end)
 
   it("leaves ignore flags nil when 'diffopt' has no corresponding entry", function()
