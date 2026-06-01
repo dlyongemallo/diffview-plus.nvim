@@ -6,7 +6,8 @@
         "before_each",
         "describe",
         "it",
-        "pending"
+        "pending",
+        "vim"
     ],
     "Lua.diagnostics.disable": [],
     "Lua.workspace.checkThirdParty": false,
