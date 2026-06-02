@@ -10,6 +10,10 @@ local lazy = require("diffview.lazy")
 local arg_parser = lazy.require("diffview.arg_parser") ---@module "diffview.arg_parser"
 local diffview = lazy.require("diffview") ---@module "diffview"
 
+-- Eagerly register the session-cleanup autocmd so the hook is in place
+-- before any `:source Session.vim` fires.
+require("diffview.session").setup()
+
 local api = vim.api
 local command = api.nvim_create_user_command
 
