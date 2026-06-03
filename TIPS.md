@@ -301,6 +301,18 @@ known issues and workarounds:
     }
     ```
 
+- **[which-key.nvim](https://github.com/folke/which-key.nvim) shows
+  `diffview_ignore` entries:**
+  - In a diffview buffer, which-key lists several `z*` fold commands with
+    the description `diffview_ignore`. Filter them out in your setup:
+    ```lua
+    require("which-key").setup({
+      filter = function(mapping)
+        return mapping.desc ~= "diffview_ignore"
+      end,
+    })
+    ```
+
 - **Scrollbind misalignment with context or winbar plugins:**
   - Plugins that add lines at the top of windows (code context, breadcrumbs)
     cause the diff panes to fall out of visual sync.
