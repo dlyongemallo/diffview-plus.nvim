@@ -1460,28 +1460,6 @@ describe("panel_render", function()
     local FOLDER_OPEN = "<<OPEN>>"
     local FOLDER_CLOSED = "<<CLOSED>>"
 
-    local saved_devicons
-
-    before_each(function()
-      -- Stub nvim-web-devicons so hl.get_file_icon does not flip
-      -- `use_icons` back to false mid-render when neither icon plugin is
-      -- installed in the test environment.
-      saved_devicons = package.loaded["nvim-web-devicons"]
-      package.loaded["nvim-web-devicons"] = {
-        get_icon = function()
-          return "", nil
-        end,
-      }
-    end)
-
-    after_each(function()
-      package.loaded["nvim-web-devicons"] = saved_devicons
-      -- Drop the cached module reference inside hl.lua so the next test
-      -- re-resolves devicons via our stub (or its absence).
-      package.loaded["diffview.hl"] = nil
-      require("diffview.hl")
-    end)
-
     local function make_tree_panel(entries, use_icons)
       local conf = config.get_config()
       conf.use_icons = use_icons

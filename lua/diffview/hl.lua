@@ -5,6 +5,7 @@ local utils = lazy.require("diffview.utils") ---@module "diffview.utils"
 
 local api = vim.api
 local web_devicons, mini_icons
+local provider_resolved = false
 local icon_cache = {}
 
 local M = {}
@@ -302,21 +303,23 @@ function M.get_file_icon(name, ext, render_data, line_idx, offset)
   end
 
   if not (web_devicons or mini_icons) then
-    local ok
-    ok, web_devicons = pcall(require, "nvim-web-devicons")
-
-    if not ok then
-      ok, mini_icons = pcall(require, "mini.icons")
-      web_devicons = nil
+    if provider_resolved then
+      return ""
     end
 
-    if not ok then
-      config.get_config().use_icons = false
-      utils.warn(
-        "nvim-web-devicons or mini.icons is required to use file icons! "
-          .. "Set `use_icons = false` in your config to stop seeing this message."
-      )
+    local ok, mod = pcall(require, "nvim-web-devicons")
+    if ok then
+      web_devicons = mod
+    else
+      ok, mod = pcall(require, "mini.icons")
+      if ok then
+        mini_icons = mod
+      end
+    end
 
+    provider_resolved = true
+
+    if not ok then
       return ""
     end
   end
