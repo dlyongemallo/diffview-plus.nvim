@@ -506,6 +506,24 @@ function Panel:init_buffer()
     end,
   })
 
+  -- Clear `winfixbuf` on this buffer's windows when it unloads.
+  -- `Panel.winopts` sets `winfixbuf=true` to protect the panel buffer;
+  -- an external wipe (e.g., `:bw!`) would otherwise latch the flag onto
+  -- a fresh `[No Name]` and trip `E1513` on the next `:edit`.
+  -- `BufUnload`, not `BufWipeout`: by `BufWipeout` time the buffer is
+  -- already detached from its windows.
+  api.nvim_create_autocmd("BufUnload", {
+    group = Panel.au.group,
+    buffer = bn,
+    callback = function()
+      for _, win in ipairs(vim.fn.win_findbuf(bn)) do
+        if api.nvim_win_is_valid(win) then
+          vim.wo[win].winfixbuf = false
+        end
+      end
+    end,
+  })
+
   self:update_components()
   self:render()
   self:redraw()
