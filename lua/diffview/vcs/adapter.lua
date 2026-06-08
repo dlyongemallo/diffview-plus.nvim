@@ -130,24 +130,47 @@ function VCSAdapter.build_top_indicators(path_args, cpath)
     end
   end
 
-  local cfile = pl:vim_expand("%")
-  cfile = pl:readlink(cfile) or cfile
-
   for _, path in ipairs(paths) do
     table.insert(top_indicators, pl:absolute(path, cpath))
     break
   end
 
-  table.insert(
-    top_indicators,
-    cpath and pl:realpath(cpath) or (vim.bo.buftype == "" and pl:absolute(cfile) or nil)
-  )
-
-  if not cpath then
-    table.insert(top_indicators, pl:realpath("."))
-  end
+  VCSAdapter.append_implicit_indicators(top_indicators, cpath)
 
   return paths, top_indicators
+end
+
+---Append the implicit indicator (the one used when no explicit path arg
+---resolves to a repo) to `top_indicators`.  When `cpath` is given (from the
+---`-C` flag), it is the sole implicit indicator; otherwise a three-tier
+---fallback is tried in order until one resolves to a repo:
+---  1. The buffer's literal path: the common case of editing a real file in a repo.
+---  2. `cwd`: the explicit-`cd` workflow, and the rescue when the buffer is a symlink
+---     whose literal location is outside any repo (e.g., a session-restored file linked
+---     from `$HOME`).
+---  3. The buffer's `readlink`'d target: last-resort rescue for symlink-managed dotfiles
+---     (stow, chezmoi, etc.) where the literal path isn't in a repo but the target is.
+---@param top_indicators string[]
+---@param cpath string?
+function VCSAdapter.append_implicit_indicators(top_indicators, cpath)
+  if cpath then
+    table.insert(top_indicators, pl:realpath(cpath))
+    return
+  end
+
+  local cfile = pl:vim_expand("%")
+  if vim.bo.buftype ~= "" or cfile == "" then
+    table.insert(top_indicators, pl:realpath("."))
+    return
+  end
+
+  local absolute_cfile = pl:absolute(cfile)
+  table.insert(top_indicators, absolute_cfile)
+  table.insert(top_indicators, pl:realpath("."))
+  local resolved = pl:readlink(cfile)
+  if resolved and resolved ~= cfile then
+    table.insert(top_indicators, pl:absolute(resolved, pl:parent(absolute_cfile)))
+  end
 end
 
 ---Iterate top-level indicators and resolve the repository root using a

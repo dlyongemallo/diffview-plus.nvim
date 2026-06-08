@@ -142,9 +142,6 @@ function GitAdapter.get_repo_paths(path_args, cpath)
     end
   end
 
-  local cfile = pl:vim_expand("%")
-  cfile = pl:readlink(cfile) or cfile
-
   for _, path in ipairs(paths) do
     if GitAdapter.pathspec_split(path) == "" then
       table.insert(top_indicators, pl:absolute(path, cpath))
@@ -152,14 +149,7 @@ function GitAdapter.get_repo_paths(path_args, cpath)
     end
   end
 
-  table.insert(
-    top_indicators,
-    cpath and pl:realpath(cpath) or (vim.bo.buftype == "" and pl:absolute(cfile) or nil)
-  )
-
-  if not cpath then
-    table.insert(top_indicators, pl:realpath("."))
-  end
+  VCSAdapter.append_implicit_indicators(top_indicators, cpath)
 
   return paths, top_indicators
 end
