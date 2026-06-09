@@ -7,6 +7,7 @@ local lazy = require("diffview.lazy")
 
 local arg_parser = lazy.require("diffview.arg_parser") ---@module "diffview.arg_parser"
 local config = lazy.require("diffview.config") ---@module "diffview.config"
+local debounce = lazy.require("diffview.debounce") ---@module "diffview.debounce"
 local lib = lazy.require("diffview.lib") ---@module "diffview.lib"
 local utils = lazy.require("diffview.utils") ---@module "diffview.utils"
 local vcs = lazy.require("diffview.vcs") ---@module "diffview.vcs"
@@ -44,11 +45,16 @@ function M.init()
       M.emit("tab_enter")
     end,
   })
+  -- Throttle `FocusGained` so bursts of focus events can't drive
+  -- `refresh_files` faster than it can complete.
+  local refresh_files_throttled = debounce.throttle_trailing(500, true, function()
+    M.emit("refresh_files")
+  end)
   au("FocusGained", {
     group = M.augroup,
     pattern = "*",
     callback = function(_)
-      M.emit("refresh_files")
+      refresh_files_throttled()
     end,
   })
   au("TabLeave", {
