@@ -95,16 +95,144 @@ function DiffView:post_open()
   })
 
   if config.get_config().watch_index and self.adapter:instanceof(GitAdapter.__get()) then
+    local index_path = self.adapter.ctx.dir .. "/index"
     self.watcher = assert(vim.uv.new_fs_poll(), "Failed to create fs poll handle!")
-    self.watcher:start(
-      self.adapter.ctx.dir .. "/index",
-      1000,
-      ---@diagnostic disable-next-line: unused-local
-      vim.schedule_wrap(function(err, prev, cur)
-        if not err then
-          if self:is_cur_tabpage() then
-            self:update_files()
+
+    -- The git index always ends with a SHA-1 (20B) or SHA-256 (32B) checksum
+    -- of the preceding content, so reading its trailing bytes gives a cheap
+    -- content fingerprint. We use it to short-circuit spurious mtime updates
+    -- where the index was rewritten but its content didn't actually change
+    -- (e.g., another process touching the file, or git refreshing an empty
+    -- stat diff). Without this guard, the 1 s poll can drive `update_files`
+    -- repeatedly even when nothing of interest has changed, causing visible
+    -- panel/diff flicker.
+    local function read_index_trailer()
+      local fd = vim.uv.fs_open(index_path, "r", 0)
+      if not fd then
+        return nil
+      end
+      local stat = vim.uv.fs_fstat(fd)
+      if not stat then
+        vim.uv.fs_close(fd)
+        return nil
+      end
+      local offset = math.max(0, stat.size - 32)
+      local data = vim.uv.fs_read(fd, 32, offset)
+      vim.uv.fs_close(fd)
+      return data
+    end
+
+    local last_trailer = read_index_trailer()
+    local refreshing = false
+    local change_during_refresh = false
+
+    -- Snapshot the trailer *after* our own refresh completes so any writes
+    -- the refresh triggered (e.g., `git diff --name-status` refreshing stat
+    -- info on a dirty worktree) don't re-fire this watcher on the next
+    -- tick and drive a 1 Hz feedback loop. Without this, an external
+    -- process that modifies a tracked file (a backup/sync/auto-save tool)
+    -- only has to dirty the worktree once: every subsequent diff refresh
+    -- writes the index, which trips the watcher, which schedules another
+    -- refresh, which writes the index again, indefinitely.
+    --
+    -- If a poll observed a *new* trailer while a refresh was in flight,
+    -- `change_during_refresh` is set; in that case we must not absorb the
+    -- post-refresh trailer (it may belong to an external write the UI
+    -- hasn't reflected yet), so we re-schedule another refresh.
+    local on_completion, start_refresh
+
+    start_refresh = function()
+      refreshing = true
+      self:update_files(nil, function(err)
+        -- `update_files_impl` invokes its callback with an `err` table on
+        -- cancellation (view closing / off-tabpage) or git failure, and
+        -- does *not* emit "files_updated" in those paths. Leaving
+        -- `last_trailer` unchanged ensures the next poll tick re-detects
+        -- the change and retries, instead of absorbing a trailer whose
+        -- contents never made it to the UI.
+        if err then
+          refreshing = false
+          change_during_refresh = false
+          return
+        end
+        on_completion()
+      end)
+    end
+
+    on_completion = function()
+      -- `update_files_impl` emits "files_updated" *and* invokes the callback
+      -- on success, so this fires twice per refresh. The `not refreshing`
+      -- guard makes the second call a no-op.
+      if not refreshing then
+        return
+      end
+      refreshing = false
+      if change_during_refresh then
+        change_during_refresh = false
+        -- Defer the follow-up via `vim.schedule` so the second `on_completion`
+        -- call (whichever of the callback or emitter fires last) sees
+        -- `refreshing = false` and hits the no-op guard above, instead of the
+        -- synchronous `start_refresh()` flipping it back to true.
+        vim.schedule(function()
+          if not self.closing:check() and self:is_cur_tabpage() then
+            start_refresh()
           end
+        end)
+      else
+        last_trailer = read_index_trailer()
+      end
+    end
+
+    -- "files_updated" fires on any successful refresh, not just the ones
+    -- we initiated via `start_refresh`. We need to handle both:
+    --
+    --   * Watcher-initiated refreshes: route through `on_completion` so
+    --     the `change_during_refresh` race is honoured. This also acts as
+    --     belt-and-suspenders for `update_files`'s `debounce_trailing(100,
+    --     ...)`, which silently drops intermediate calls' callbacks when
+    --     several invocations coalesce within the debounce window.
+    --   * Other refresh paths (the initial `self:update_files()` in the
+    --     `vim.schedule` block below, the GitSignsChanged autocmd): these
+    --     can rewrite the index and change the trailer, so we must absorb
+    --     it here. Otherwise `last_trailer` stays stale and the next poll
+    --     tick observes a "new" trailer, scheduling a redundant refresh.
+    --
+    -- The emitter passes a `FileDict`, which we drop via the wrapper;
+    -- error/cancellation paths never emit "files_updated" and are handled
+    -- by the `start_refresh` callback above.
+    self.emitter:on("files_updated", function()
+      if refreshing then
+        on_completion()
+      else
+        last_trailer = read_index_trailer()
+      end
+    end)
+
+    self.watcher:start(
+      index_path,
+      1000,
+      vim.schedule_wrap(function(err)
+        if err then
+          return
+        end
+        local new_trailer = read_index_trailer()
+        if new_trailer == last_trailer then
+          return
+        end
+        if refreshing then
+          -- An external change landed mid-refresh. Don't absorb it on
+          -- completion; `on_completion` will chase it with another
+          -- refresh.
+          change_during_refresh = true
+          return
+        end
+        if self:is_cur_tabpage() then
+          start_refresh()
+        else
+          -- Off-tabpage: `update_files` would no-op anyway, so just absorb
+          -- the new fingerprint to avoid re-firing on the same change until
+          -- the user returns and triggers their own refresh.
+          last_trailer = new_trailer
         end
       end)
     )
