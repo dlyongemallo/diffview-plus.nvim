@@ -132,6 +132,8 @@ function Window:open_fallback()
 
   if self:show_winbar_info() then
     vim.wo[self.id].winbar = self.file.winbar
+  else
+    vim.wo[self.id].winbar = ""
   end
 
   self.emitter:emit("post_open")
@@ -255,6 +257,8 @@ Window.open_file = async.void(function(self)
 
   if self:show_winbar_info() then
     vim.wo[self.id].winbar = self.file.winbar
+  else
+    vim.wo[self.id].winbar = ""
   end
 
   self.emitter:emit("post_open")
