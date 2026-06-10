@@ -43,6 +43,36 @@ describe("diffview.vcs.file", function()
     assert.False(show_called)
   end)
 
+  it("adopts a stale `diffview://null` in a tab's only window without raising E444", function()
+    -- Regression: `_get_null_buffer` used to call `utils.wipe_named_buffer`
+    -- when `nvim_buf_set_name` collided with an existing `diffview://null`
+    -- buffer. `wipe_named_buffer` closes every window showing that buffer,
+    -- which throws E444 when the stale buffer occupies the only window in
+    -- the current tabpage. The function now adopts the existing buffer.
+    local null_buf = File._get_null_buffer()
+
+    -- Stage the scenario: a fresh tab whose only window displays the null
+    -- buffer, mimicking a stale `diffview://null` from a previous session.
+    vim.cmd("tabnew")
+    local tab = vim.api.nvim_get_current_tabpage()
+    vim.api.nvim_set_current_buf(null_buf)
+
+    -- Drop the cached singleton so `_get_null_buffer` re-runs the
+    -- adoption path against the still-named buffer.
+    File.NULL_FILE.bufnr = nil
+
+    local ok, adopted = pcall(File._get_null_buffer)
+
+    assert.is_true(ok)
+    assert.equals(null_buf, adopted)
+    assert.is_true(vim.api.nvim_tabpage_is_valid(tab))
+
+    if vim.api.nvim_tabpage_is_valid(tab) then
+      vim.api.nvim_set_current_tabpage(tab)
+      vim.cmd("tabclose")
+    end
+  end)
+
   it("does not probe binary-ness for a nulled file", function()
     -- A deleted file's gone `LOCAL` path makes `is_binary` false-positive; a
     -- nulled side must not be probed (its result is unused).

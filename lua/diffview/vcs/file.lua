@@ -730,15 +730,29 @@ end
 ---@return integer
 function File._get_null_buffer()
   if not api.nvim_buf_is_loaded(File.NULL_FILE.bufnr or -1) then
-    local bn = api.nvim_create_buf(false, false)
+    local bufname = "diffview://null"
+    -- Adopt an existing `diffview://null` buffer if one is still around
+    -- (e.g., from a previous diffview session). Wiping it would call
+    -- `nvim_win_close` on every window showing it, which throws E444 when
+    -- that buffer happens to occupy the only window in the current tabpage.
+    local bn = utils.find_named_buffer(bufname) or api.nvim_create_buf(false, false)
+    -- An adopted buffer may be unloaded; force-load it so the outer guard
+    -- above sees it as loaded on later calls.
+    if not api.nvim_buf_is_loaded(bn) then
+      vim.fn.bufload(bn)
+    end
+    -- Reset content in case the adopted buffer carries stale lines from a
+    -- previous session; the null buffer must always be empty.
+    vim.bo[bn].modifiable = true
+    api.nvim_buf_set_lines(bn, 0, -1, false, {})
     for option, value in pairs(File.bufopts) do
       vim.bo[bn][option] = value
     end
+    -- `nvim_buf_set_lines` flips `modified`; clear it so a hidden adopted
+    -- null buffer never trips `:quit`/`bdelete` with unsaved-changes errors.
+    vim.bo[bn].modified = false
 
-    local bufname = "diffview://null"
-    local ok = pcall(api.nvim_buf_set_name, bn, bufname)
-    if not ok then
-      utils.wipe_named_buffer(bufname)
+    if vim.fn.bufname(bn) ~= bufname then
       api.nvim_buf_set_name(bn, bufname)
     end
 
