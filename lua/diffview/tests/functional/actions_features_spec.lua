@@ -246,6 +246,86 @@ describe("copy_hash honors vim.v.register (f728b1f)", function()
 end)
 
 -----------------------------------------------------------------------
+-- #231: file_history `open_in_diffview` derives revs from `file.revs`.
+-- `file.revs` is the canonical rev pair on a FileEntry and is set for
+-- every layout class, so the action works under any layout. Reaching
+-- into the layout's window files only works for layouts that expose
+-- `.a` and `.b` Windows (`Diff2`); single-window layouts (`diff1_*`)
+-- have no `.a` window.
+-----------------------------------------------------------------------
+
+describe("file_history open_in_diffview is layout-agnostic (#231)", function()
+  local listeners_factory = require("diffview.scene.views.file_history.listeners")
+
+  it("uses file.revs without dereferencing file.layout", function()
+    -- Trap layout: errors on any field access so a regression that
+    -- indexes `file.layout.{a,b}.file.rev` (or any other field) is
+    -- caught at the moment of access.
+    local layout_trap = setmetatable({}, {
+      __index = function(_, key)
+        error("open_in_diffview must not index file.layout (got '" .. key .. "')")
+      end,
+    })
+
+    local rev_a, rev_b = "<rev_a>", "<rev_b>"
+    local file = {
+      revs = { a = rev_a, b = rev_b },
+      absolute_path = "/repo/foo.lua",
+      layout = layout_trap,
+    }
+
+    local captured = {}
+    local mock_view = {
+      adapter = {
+        rev_to_pretty_string = function(_, a, b)
+          captured.pretty_args = { a, b }
+          return "<pretty>"
+        end,
+      },
+      infer_cur_file = function()
+        return file
+      end,
+    }
+
+    -- Swap the modules the listener resolves lazily. `listeners.lua` holds
+    -- `lazy.access(...)` wrappers that resolve on first call via
+    -- `require()`, so replacing `package.loaded` here captures the swap.
+    -- The wrappers cache their resolved values, so the swap is only
+    -- effective if no earlier code path has already resolved them.
+    local diff_view_path = "diffview.scene.views.diff.diff_view"
+    local lib_path = "diffview.lib"
+    local orig_diff_view_mod = package.loaded[diff_view_path]
+    local orig_lib = package.loaded[lib_path]
+
+    package.loaded[diff_view_path] = {
+      DiffView = function(opts)
+        captured.opts = opts
+        return { open = function() end }
+      end,
+    }
+    package.loaded[lib_path] = setmetatable({
+      add_view = function(v)
+        captured.added = v
+      end,
+    }, { __index = orig_lib })
+
+    local listeners = listeners_factory(mock_view)
+    local ok, err = pcall(listeners.open_in_diffview)
+
+    package.loaded[diff_view_path] = orig_diff_view_mod
+    package.loaded[lib_path] = orig_lib
+
+    assert(ok, err)
+    eq({ rev_a, rev_b }, captured.pretty_args)
+    eq(rev_a, captured.opts.left)
+    eq(rev_b, captured.opts.right)
+    eq("<pretty>", captured.opts.rev_arg)
+    eq("/repo/foo.lua", captured.opts.options.selected_file)
+    assert.is_not_nil(captured.added)
+  end)
+end)
+
+-----------------------------------------------------------------------
 -- 431ee89: prevent scrollbind/cursorbind from persisting after close.
 -- The NULL_FILE winopts explicitly set scrollbind=false and
 -- cursorbind=false. Window._save_winopts reads these via vim.wo

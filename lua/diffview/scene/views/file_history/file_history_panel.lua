@@ -210,7 +210,7 @@ FileHistoryPanel.update_entries = async.wrap(function(self, callback)
   self.updating = true
 
   local layout_opt = {
-    default_layout = self.parent:get_default_layout() --[[@as Diff2 ]],
+    default_layout = self.parent:get_default_layout(),
     pin_local = self.parent.pin_local,
     pinned_path = self.parent.pinned_path,
     -- Closure into the view's pin_local cache: adapters call this when

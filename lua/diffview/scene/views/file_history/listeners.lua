@@ -45,13 +45,13 @@ return function(view)
       local file = view:infer_cur_file()
 
       if file then
-        local layout = file.layout --[[@as Diff2 ]]
+        local revs = file.revs
 
         local new_view = DiffView({
           adapter = view.adapter,
-          rev_arg = view.adapter:rev_to_pretty_string(layout.a.file.rev, layout.b.file.rev),
-          left = layout.a.file.rev,
-          right = layout.b.file.rev,
+          rev_arg = view.adapter:rev_to_pretty_string(revs.a, revs.b),
+          left = revs.a,
+          right = revs.b,
           options = { selected_file = file.absolute_path },
         })
 
