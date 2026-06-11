@@ -191,6 +191,102 @@ describe("diffview.standard_view should_show_panel", function()
   end)
 end)
 
+describe("diffview.standard_view layout-swap focus", function()
+  it("restores focus to the file panel when the panel was focused before the swap", function()
+    local panel_focus_calls = 0
+    local main_focus_calls = 0
+
+    ---@diagnostic disable-next-line: missing-fields
+    local view = setmetatable({
+      panel = {
+        focus = function(_, no_open)
+          panel_focus_calls = panel_focus_calls + 1
+          eq(true, no_open)
+        end,
+      },
+      cur_layout = {
+        is_focused = function()
+          return true
+        end,
+        get_main_win = function()
+          return {
+            focus = function()
+              main_focus_calls = main_focus_calls + 1
+            end,
+          }
+        end,
+      },
+    }, { __index = StandardView })
+
+    view:restore_focus_after_layout_swap(true)
+
+    eq(1, panel_focus_calls)
+    eq(0, main_focus_calls)
+  end)
+
+  it("preserves main-window focus when the diff layout was focused before the swap", function()
+    local panel_focus_calls = 0
+    local main_focus_calls = 0
+
+    ---@diagnostic disable-next-line: missing-fields
+    local view = setmetatable({
+      panel = {
+        focus = function()
+          panel_focus_calls = panel_focus_calls + 1
+        end,
+      },
+      cur_layout = {
+        is_focused = function()
+          return true
+        end,
+        get_main_win = function()
+          return {
+            focus = function()
+              main_focus_calls = main_focus_calls + 1
+            end,
+          }
+        end,
+      },
+    }, { __index = StandardView })
+
+    view:restore_focus_after_layout_swap(false)
+
+    eq(0, panel_focus_calls)
+    eq(1, main_focus_calls)
+  end)
+
+  it("does nothing when neither the panel nor the layout was focused before the swap", function()
+    local panel_focus_calls = 0
+    local main_focus_calls = 0
+
+    ---@diagnostic disable-next-line: missing-fields
+    local view = setmetatable({
+      panel = {
+        focus = function()
+          panel_focus_calls = panel_focus_calls + 1
+        end,
+      },
+      cur_layout = {
+        is_focused = function()
+          return false
+        end,
+        get_main_win = function()
+          return {
+            focus = function()
+              main_focus_calls = main_focus_calls + 1
+            end,
+          }
+        end,
+      },
+    }, { __index = StandardView })
+
+    view:restore_focus_after_layout_swap(false)
+
+    eq(0, panel_focus_calls)
+    eq(0, main_focus_calls)
+  end)
+end)
+
 -- Rapid navigation (e.g., mashing `<Tab>` faster than the async HEAD~ git
 -- fetch can complete) used to spawn overlapping `_set_file` coroutines
 -- that shared the same windows. The second's `Layout.use_entry`

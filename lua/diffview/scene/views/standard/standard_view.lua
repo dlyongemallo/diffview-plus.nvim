@@ -177,6 +177,15 @@ function StandardView:restore_panel_cursor()
   end
 end
 
+---@param panel_was_focused boolean
+function StandardView:restore_focus_after_layout_swap(panel_was_focused)
+  if panel_was_focused then
+    self.panel:focus(true)
+  elseif self.cur_layout:is_focused() then
+    self.cur_layout:get_main_win():focus()
+  end
+end
+
 ---@param self StandardView
 ---@param entry FileEntry
 StandardView.use_entry = async.void(function(self, entry)
@@ -203,6 +212,7 @@ StandardView.use_entry = async.void(function(self, entry)
   end
 
   local old_layout = self.cur_layout
+  local panel_was_focused = self.panel:is_focused()
   self.cur_entry = entry
 
   if entry.layout.class == self.cur_layout.class then
@@ -228,9 +238,7 @@ StandardView.use_entry = async.void(function(self, entry)
       vim.cmd("wincmd =")
     end
 
-    if self.cur_layout:is_focused() then
-      self.cur_layout:get_main_win():focus()
-    end
+    self:restore_focus_after_layout_swap(panel_was_focused)
   end
 end)
 
