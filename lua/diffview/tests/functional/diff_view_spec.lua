@@ -668,6 +668,116 @@ describe("diffview.scene.views.diff.DiffView", function()
     end)
   end)
 
+  describe("file panel follow navigation", function()
+    local listeners_factory = require("diffview.scene.views.diff.listeners")
+
+    local function make_view(item)
+      local set_file_calls = {}
+      local view = {
+        files = { working = {}, conflicting = {} },
+        adapter = {
+          has_local = function()
+            return false
+          end,
+        },
+        left = {},
+        right = {},
+        ready = false,
+        panel = {
+          cur_file = nil,
+          is_open = function()
+            return true
+          end,
+          highlight_next_file = function(self)
+            self.highlight_next_calls = (self.highlight_next_calls or 0) + 1
+          end,
+          highlight_prev_file = function(self)
+            self.highlight_prev_calls = (self.highlight_prev_calls or 0) + 1
+          end,
+          get_item_at_cursor = function()
+            return item
+          end,
+          prune_selections = function() end,
+        },
+        set_file = function(_, file, focus, highlight)
+          set_file_calls[#set_file_calls + 1] =
+            { file = file, focus = focus, highlight = highlight }
+        end,
+      }
+      return view, set_file_calls
+    end
+
+    it("moves to the next file and previews it without focusing the diff window", function()
+      local file = { path = "foo.txt" }
+      local view, set_file_calls = make_view(file)
+      local listeners = listeners_factory(view)
+
+      listeners.next_entry_follow()
+
+      eq(1, view.panel.highlight_next_calls)
+      eq({ { file = file, focus = false, highlight = false } }, set_file_calls)
+    end)
+
+    it("moves to the previous file and previews it without focusing the diff window", function()
+      local file = { path = "foo.txt" }
+      local view, set_file_calls = make_view(file)
+      local listeners = listeners_factory(view)
+
+      listeners.prev_entry_follow()
+
+      eq(1, view.panel.highlight_prev_calls)
+      eq({ { file = file, focus = false, highlight = false } }, set_file_calls)
+    end)
+
+    it("does not preview during default next/prev navigation", function()
+      local original_config = vim.deepcopy(config.get_config())
+      config.setup({ file_panel = { follow_navigation = false } })
+      local file = { path = "foo.txt" }
+      local view, set_file_calls = make_view(file)
+      local listeners = listeners_factory(view)
+
+      listeners.next_entry()
+      listeners.prev_entry()
+
+      eq(1, view.panel.highlight_next_calls)
+      eq(1, view.panel.highlight_prev_calls)
+      eq({}, set_file_calls)
+
+      config.setup(original_config)
+    end)
+
+    it("previews during next/prev navigation when follow_navigation is enabled", function()
+      local original_config = vim.deepcopy(config.get_config())
+      config.setup({ file_panel = { follow_navigation = true } })
+      local file = { path = "foo.txt" }
+      local view, set_file_calls = make_view(file)
+      local listeners = listeners_factory(view)
+
+      listeners.next_entry()
+      listeners.prev_entry()
+
+      eq(1, view.panel.highlight_next_calls)
+      eq(1, view.panel.highlight_prev_calls)
+      eq({
+        { file = file, focus = false, highlight = false },
+        { file = file, focus = false, highlight = false },
+      }, set_file_calls)
+
+      config.setup(original_config)
+    end)
+
+    it("does not preview directory entries", function()
+      local dir = { collapsed = true }
+      local view, set_file_calls = make_view(dir)
+      local listeners = listeners_factory(view)
+
+      listeners.next_entry_follow()
+
+      eq(1, view.panel.highlight_next_calls)
+      eq({}, set_file_calls)
+    end)
+  end)
+
   -- `_set_file` rapid-navigation coalescing is exercised against
   -- `StandardView` (the shared owner of the worker) in
   -- `standard_view_spec.lua`; DiffView inherits the behavior unchanged.

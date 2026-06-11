@@ -1177,6 +1177,12 @@ file_panel                                      *diffview-config-file_panel*
             {show_branch_name} (boolean)
                 Show branch name in the file panel header. Default: `false`
 
+            {follow_navigation} (boolean)
+                Open the file under the cursor after `next_entry` and
+                `prev_entry` navigation in the file panel. The diff is opened
+                with `focus=false`, so focus remains in the file panel.
+                Default: `false`
+
 file_history_panel                              *diffview-config-file_history_panel*
         Type: `table`, Default: (see defaults)
 
@@ -1806,6 +1812,13 @@ next_entry                                      *diffview-actions-next_entry*
 
         Bring the cursor in the subject panel to the next entry.
 
+next_entry_follow                        *diffview-actions-next_entry_follow*
+        Contexts: `file_panel`
+
+        Bring the cursor in the file panel to the next file entry and open its
+        diff without focusing the diff window. Directory entries are skipped
+        for opening: the cursor still moves, but no diff is selected.
+
 open_all_folds                                  *diffview-actions-open_all_folds*
         Contexts: `file_panel`, `file_history_panel`
 
@@ -1852,6 +1865,13 @@ prev_entry                                      *diffview-actions-prev_entry*
         Contexts: `view`, `panel`
 
         Bring the cursor in the subject panel to the previous entry.
+
+prev_entry_follow                        *diffview-actions-prev_entry_follow*
+        Contexts: `file_panel`
+
+        Bring the cursor in the file panel to the previous file entry and open
+        its diff without focusing the diff window. Directory entries are
+        skipped for opening: the cursor still moves, but no diff is selected.
 
 refresh_files                                   *diffview-actions-refresh_files*
         Contexts: `view`, `panel`

@@ -51,6 +51,20 @@ return function(view)
     end
   end
 
+  local function preview_file_at_cursor()
+    if not view.panel:is_open() then
+      return
+    end
+
+    ---@type any
+    local item = view.panel:get_item_at_cursor()
+    if not item or type(item.collapsed) == "boolean" or view.panel.cur_file == item then
+      return
+    end
+
+    view:set_file(item, false, false)
+  end
+
   return {
     tab_enter = function()
       local file = view.panel.cur_file
@@ -151,9 +165,23 @@ return function(view)
     end,
     next_entry = function()
       view.panel:highlight_next_file()
+      if config.get_config().file_panel.follow_navigation then
+        preview_file_at_cursor()
+      end
     end,
     prev_entry = function()
       view.panel:highlight_prev_file()
+      if config.get_config().file_panel.follow_navigation then
+        preview_file_at_cursor()
+      end
+    end,
+    next_entry_follow = function()
+      view.panel:highlight_next_file()
+      preview_file_at_cursor()
+    end,
+    prev_entry_follow = function()
+      view.panel:highlight_prev_file()
+      preview_file_at_cursor()
     end,
     select_entry = function()
       if view.panel:is_open() then

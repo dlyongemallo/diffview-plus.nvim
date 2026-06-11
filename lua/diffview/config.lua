@@ -442,6 +442,7 @@ M.defaults = {
   ---@field always_show_marks boolean
   ---@field mark_placement DiffviewMarkPlacement
   ---@field show_branch_name boolean
+  ---@field follow_navigation boolean
 
   ---@class DiffviewFilePanelConfig.user
   ---@field listing_style? DiffviewListingStyle "list" or "tree".
@@ -454,6 +455,7 @@ M.defaults = {
   ---@field always_show_marks? boolean Show selection marks even when no files are selected.
   ---@field mark_placement? DiffviewMarkPlacement Where to render selection marks.
   ---@field show_branch_name? boolean Show branch name in the file panel header.
+  ---@field follow_navigation? boolean Preview the file under the cursor after file-panel navigation.
   file_panel = {
     listing_style = "tree",
     sort_file = nil, -- Custom file comparator: function(a_name, b_name, a_data, b_data) -> boolean
@@ -500,6 +502,7 @@ M.defaults = {
     always_show_marks = false, -- Show selection marks even when no files are selected.
     mark_placement = "inline", -- Where to show selection marks: "inline" (next to file names) or "sign_column" (in the sign column).
     show_branch_name = false, -- Show branch name in the file panel header.
+    follow_navigation = false, -- Preview the file under the cursor after file-panel navigation.
   },
 
   ---@alias DiffviewStatStyle "number"|"bar"|"both"
@@ -1708,6 +1711,9 @@ function M.setup(user_config)
   )
   validate.boolean(file_panel, "show_branch_name", d.file_panel.show_branch_name, {
     path = "file_panel.show_branch_name",
+  })
+  validate.boolean(file_panel, "follow_navigation", d.file_panel.follow_navigation, {
+    path = "file_panel.follow_navigation",
   })
 
   -- file_history_panel

@@ -12,6 +12,11 @@ describe("diffview.actions goto_file API", function()
     assert.is_function(actions.goto_file_tab)
   end)
 
+  it("exports follow-navigation actions for file panel keymaps", function()
+    assert.is_function(actions.next_entry_follow)
+    assert.is_function(actions.prev_entry_follow)
+  end)
+
   -- The goto_file functions require an active DiffView to operate.
   -- Without one, prepare_goto_file accesses a nil view, which is the
   -- expected pre-existing behaviour (they are only called from keymaps

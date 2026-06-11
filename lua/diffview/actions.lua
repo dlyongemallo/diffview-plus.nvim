@@ -47,6 +47,7 @@ local pl = lazy.access(utils, "path") --[[@as PathLib ]]
 ---@field focus_files fun()
 ---@field listing_style fun()
 ---@field next_entry fun()
+---@field next_entry_follow fun()
 ---@field next_entry_in_commit fun()
 ---@field open_all_folds fun()
 ---@field open_commit_in_browser fun()
@@ -55,6 +56,7 @@ local pl = lazy.access(utils, "path") --[[@as PathLib ]]
 ---@field open_in_diffview fun()
 ---@field options fun()
 ---@field prev_entry fun()
+---@field prev_entry_follow fun()
 ---@field prev_entry_in_commit fun()
 ---@field restore_entry fun()
 ---@field select_entry fun()
@@ -1176,6 +1178,7 @@ local action_names = {
   "focus_files",
   "listing_style",
   "next_entry",
+  "next_entry_follow",
   "next_entry_in_commit",
   "open_all_folds",
   "open_commit_in_browser",
@@ -1184,6 +1187,7 @@ local action_names = {
   "open_in_diffview",
   "options",
   "prev_entry",
+  "prev_entry_follow",
   "prev_entry_in_commit",
   "restore_entry",
   "select_entry",

@@ -1,3 +1,4 @@
+local actions = require("diffview.actions")
 local config = require("diffview.config")
 local utils = require("diffview.utils")
 
@@ -38,6 +39,19 @@ describe("diffview.config default keymaps", function()
     return nil
   end
 
+  local function has_action(keymaps, action)
+    for _, section in pairs(keymaps) do
+      if type(section) == "table" then
+        for _, km in ipairs(section) do
+          if km[3] == action then
+            return true
+          end
+        end
+      end
+    end
+    return false
+  end
+
   it("shared nav keymaps appear in view section", function()
     local keymaps = config.defaults.keymaps
     -- <tab> is a common nav keymap that should be in view.
@@ -70,6 +84,15 @@ describe("diffview.config default keymaps", function()
         "file_history_panel missing " .. lhs
       )
     end
+  end)
+
+  it("follow-navigation actions are opt-in and do not replace j/k defaults", function()
+    local keymaps = config.defaults.keymaps
+    assert.is_false(config.defaults.file_panel.follow_navigation)
+    assert.same(actions.next_entry, find_keymap(keymaps.file_panel, "j")[3])
+    assert.same(actions.prev_entry, find_keymap(keymaps.file_panel, "k")[3])
+    assert.falsy(has_action(keymaps, actions.next_entry_follow))
+    assert.falsy(has_action(keymaps, actions.prev_entry_follow))
   end)
 
   it("section-specific keymaps are not leaked to other sections", function()
