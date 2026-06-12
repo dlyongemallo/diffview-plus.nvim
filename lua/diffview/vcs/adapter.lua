@@ -39,6 +39,7 @@ local M = {}
 
 ---@class vcs.adapter.VCSAdapter.Ctx
 ---@field toplevel? string # VCS repository toplevel directory
+---@field exec_root? string # Directory from which VCS commands should execute
 ---@field dir? string # VCS directory
 ---@field path_args? string[] # Resolved path arguments
 
@@ -391,6 +392,11 @@ function VCSAdapter:args()
   return utils.vec_slice(self:get_command(), 2)
 end
 
+---@return string? cwd The preferred execution directory for VCS commands.
+function VCSAdapter:exec_root()
+  return self.ctx.exec_root or self.ctx.toplevel
+end
+
 ---Execute a VCS command synchronously.
 ---@param args string[]
 ---@param cwd_or_opt? string|utils.job.Opt
@@ -616,7 +622,7 @@ VCSAdapter.show = async.wrap(function(self, path, rev, callback)
   job = Job({
     command = self:bin(),
     args = self:get_show_args(path, rev),
-    cwd = self.ctx.toplevel,
+    cwd = self:exec_root(),
     retry = 2,
     fail_cond = Job.FAIL_COND.on_empty,
     log_opt = { label = "VCSAdapter:show()" },

@@ -206,20 +206,7 @@ local function normalize_cygwin_path(path)
   return path
 end
 
----Check if one path is contained within another
----@param base string
----@param candidate string
----@return boolean
-local function is_within(base, candidate)
-  base = pl:remove_trailing(base)
-  candidate = pl:remove_trailing(candidate)
-  return candidate == base or vim.startswith(candidate, pl:add_trailing(base))
-end
-
 ---Get the git toplevel directory from a path to file or directory.
----When an explicit `-C` points at a linked worktree-like location, git can
----report the main worktree for `--show-toplevel` even though commands should
----continue to execute from the given path.
 ---@param path string
 ---@return string?
 local function get_toplevel(path)
@@ -233,15 +220,7 @@ local function get_toplevel(path)
   if code ~= 0 then
     return nil
   end
-
-  local toplevel = normalize_cygwin_path(out[1] and vim.trim(out[1]))
-  local cpath = pl:realpath(path)
-
-  if cpath and toplevel and pl:is_dir(cpath) and not is_within(toplevel, cpath) then
-    return cpath
-  end
-
-  return toplevel
+  return normalize_cygwin_path(out[1] and vim.trim(out[1]))
 end
 
 ---@param top_indicators string[] A list of paths that might indicate what working tree we are in.
@@ -284,13 +263,15 @@ function GitAdapter:init(opt)
   opt = opt or {}
   self:super(opt)
 
-  local cwd = opt.cpath or uv.cwd()
+  local base_cwd = opt.cpath or assert(uv.cwd(), "uv.cwd() failed")
+  local exec_root = pl:realpath(base_cwd) or base_cwd
 
   self.ctx = {
     toplevel = opt.toplevel,
-    dir = self:get_dir(opt.toplevel),
+    exec_root = exec_root,
+    dir = self:get_dir(exec_root),
     path_args = vim.tbl_map(function(pathspec)
-      return GitAdapter.pathspec_expand(opt.toplevel, cwd, pathspec)
+      return GitAdapter.pathspec_expand(opt.toplevel, exec_root, pathspec)
     end, opt.path_args or {}) --[[@as string[] ]],
   }
 
@@ -322,6 +303,22 @@ function GitAdapter:get_dir(path)
     return nil
   end
   return normalize_cygwin_path(out[1] and vim.trim(out[1]))
+end
+
+function GitAdapter:exec_sync(args, cwd_or_opt)
+  if type(cwd_or_opt) == "string" then
+    if cwd_or_opt == self.ctx.toplevel then
+      cwd_or_opt = self:exec_root()
+    end
+  elseif type(cwd_or_opt) == "table" then
+    if cwd_or_opt.cwd == self.ctx.toplevel then
+      cwd_or_opt = vim.tbl_extend("force", {}, cwd_or_opt, { cwd = self:exec_root() })
+    end
+  elseif cwd_or_opt == nil then
+    cwd_or_opt = self:exec_root()
+  end
+
+  return VCSAdapter.exec_sync(self, args, cwd_or_opt)
 end
 
 ---Verify that a given git rev is valid.
@@ -554,7 +551,7 @@ function GitAdapter:stream_fh_data(state)
       "--",
       state.path_args
     ),
-    cwd = self.ctx.toplevel,
+    cwd = self:exec_root(),
     log_opt = { label = "GitAdapter:incremental_fh_data()" },
     on_stdout = on_stdout,
     on_exit = utils.hard_bind(stream.close, stream),
@@ -635,7 +632,7 @@ function GitAdapter:stream_line_trace_data(state)
       state.prepared_log_opts.rev_range,
       "--"
     ),
-    cwd = self.ctx.toplevel,
+    cwd = self:exec_root(),
     log_opt = { label = "GitAdapter:incremental_line_trace_data()" },
     on_stdout = on_stdout,
     on_exit = utils.hard_bind(stream.close, stream),
@@ -1289,7 +1286,7 @@ GitAdapter.fh_retry_commit = async.wrap(function(self, rev_arg, state, opt, call
       "--",
       state.old_path or state.path_args
     ),
-    cwd = self.ctx.toplevel,
+    cwd = self:exec_root(),
     fail_cond = Job.FAIL_COND.on_empty,
     log_opt = { label = "GitAdapter:fh_retry_commit()" },
   })
@@ -1897,12 +1894,18 @@ function GitAdapter:parse_revs(rev_arg, opt)
   ---@type Rev?
   local right
 
-  local head = self:head_rev()
-  ---@cast head Rev
+  ---@type Rev?
+  local head
+  local function get_head()
+    if head == nil then
+      head = self:head_rev()
+    end
+    return head
+  end
 
   if not rev_arg then
     if opt.cached then
-      left = head or GitRev.new_null_tree()
+      left = get_head() or GitRev.new_null_tree()
       right = GitRev(RevType.STAGE, 0)
     else
       left = GitRev(RevType.STAGE, 0)
@@ -1915,7 +1918,10 @@ function GitAdapter:parse_revs(rev_arg, opt)
     elseif opt.imply_local then
       ---@cast left Rev
       ---@cast right Rev
-      left, right = self:imply_local(left, right, head)
+      local resolved_head = get_head()
+      if resolved_head then
+        left, right = self:imply_local(left, right, resolved_head)
+      end
     end
   else
     local rev_strings, code, stderr = self:exec_sync(
@@ -1949,7 +1955,10 @@ function GitAdapter:parse_revs(rev_arg, opt)
       end
 
       if opt.imply_local then
-        left, right = self:imply_local(left, right, head)
+        local resolved_head = get_head()
+        if resolved_head then
+          left, right = self:imply_local(left, right, resolved_head)
+        end
       end
     else
       local hash = rev_strings[1]:gsub("^%^", "")
@@ -1959,8 +1968,14 @@ function GitAdapter:parse_revs(rev_arg, opt)
       else
         -- When comparing a single ref with working tree, optionally use merge-base.
         if opt.merge_base then
+          local resolved_head = get_head()
+          if not resolved_head then
+            left = GitRev(RevType.COMMIT, hash)
+            right = GitRev(RevType.LOCAL)
+            return left, right
+          end
           local merge_base_out, merge_base_code = self:exec_sync(
-            { "merge-base", "HEAD", hash },
+            { "merge-base", resolved_head.commit, hash },
             { cwd = self.ctx.toplevel, fail_on_empty = true, retry = 2 }
           )
           if merge_base_code == 0 and #merge_base_out > 0 then
@@ -2239,7 +2254,7 @@ GitAdapter.tracked_files = async.wrap(function(self, left, right, args, kind, op
       "--name-status",
       args
     ),
-    cwd = self.ctx.toplevel,
+    cwd = self:exec_root(),
     log_opt = log_opt,
   })
   local numstat_job = Job({
@@ -2253,7 +2268,7 @@ GitAdapter.tracked_files = async.wrap(function(self, left, right, args, kind, op
       "--numstat",
       args
     ),
-    cwd = self.ctx.toplevel,
+    cwd = self:exec_root(),
     log_opt = log_opt,
   })
 
@@ -2441,7 +2456,7 @@ GitAdapter.untracked_files = async.wrap(function(self, left, right, opt, callbac
       "--others",
       "--exclude-standard"
     ),
-    cwd = self.ctx.toplevel,
+    cwd = self:exec_root(),
     log_opt = { label = "GitAdapter:untracked_files()" },
   })
 
@@ -2516,6 +2531,14 @@ function GitAdapter:is_binary(path, rev)
     ".",
   }
   if rev.type == RevType.LOCAL then
+    local tracked_cmd = vim.deepcopy(cmd)
+    utils.vec_push(tracked_cmd, "--", path)
+
+    local _, tracked_code = self:exec_sync(tracked_cmd, { cwd = self.ctx.toplevel, silent = true })
+    if tracked_code == 0 then
+      return false
+    end
+
     cmd[#cmd + 1] = "--untracked"
     cmd[#cmd + 1] = "--no-exclude-standard"
   elseif rev.type == RevType.STAGE then

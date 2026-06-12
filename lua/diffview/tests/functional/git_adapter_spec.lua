@@ -79,16 +79,18 @@ end
 
 describe("diffview.vcs.adapters.git", function()
   it(
-    "prefers explicit cpath when git show-toplevel escapes it",
+    "keeps git toplevel for paths and explicit cpath for command execution",
     test_utils.async_test(function()
       local env = make_linked_worktree_like_repo()
 
       local ok, err = pcall(function()
-        assert.equals(env.shadow, env.toplevel)
+        assert.equals(env.repo, env.toplevel)
 
         local adapter_err, adapter = GitAdapter.create(env.toplevel, {}, env.shadow)
         assert.is_nil(adapter_err)
-        assert.equals(env.shadow, adapter.ctx.toplevel)
+        assert.equals(env.repo, adapter.ctx.toplevel)
+        assert.equals(env.shadow, adapter:exec_root())
+        assert.equals(env.shadow, adapter.ctx.dir)
       end)
 
       vim.schedule(env.cleanup)
