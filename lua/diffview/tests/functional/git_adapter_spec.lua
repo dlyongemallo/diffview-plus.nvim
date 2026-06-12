@@ -40,7 +40,66 @@ local function make_repo_and_adapter()
   return repo, adapter
 end
 
+local function make_linked_worktree_like_repo()
+  local repo = vim.fn.tempname()
+  assert.equals(1, vim.fn.mkdir(repo, "p"))
+
+  run({ "git", "init", "-q" }, repo)
+  run({ "git", "config", "user.name", "Diffview Test" }, repo)
+  run({ "git", "config", "user.email", "diffview@test.local" }, repo)
+
+  local tracked = repo .. "/tracked.txt"
+  local f = assert(io.open(tracked, "w"))
+  f:write("init\n")
+  f:close()
+
+  run({ "git", "add", "tracked.txt" }, repo)
+  run({ "git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "init" }, repo)
+
+  local shadow = vim.fn.tempname()
+  assert.equals(1, vim.fn.mkdir(shadow, "p"))
+  local gitdir = shadow .. "/.git"
+  local gf = assert(io.open(gitdir, "w"))
+  gf:write("gitdir: " .. repo:gsub("\\", "/") .. "/.git\n")
+  gf:close()
+
+  local ok, err = GitAdapter.find_toplevel({ shadow })
+  assert.is_nil(ok)
+
+  return {
+    repo = repo,
+    shadow = shadow,
+    cleanup = function()
+      pcall(vim.fn.delete, shadow, "rf")
+      pcall(vim.fn.delete, repo, "rf")
+    end,
+    toplevel = err,
+  }
+end
+
 describe("diffview.vcs.adapters.git", function()
+  it(
+    "prefers explicit cpath when git show-toplevel escapes it",
+    test_utils.async_test(function()
+      local env = make_linked_worktree_like_repo()
+
+      local ok, err = pcall(function()
+        assert.equals(env.shadow, env.toplevel)
+
+        local adapter_err, adapter = GitAdapter.create(env.toplevel, {}, env.shadow)
+        assert.is_nil(adapter_err)
+        assert.equals(env.shadow, adapter.ctx.toplevel)
+      end)
+
+      vim.schedule(env.cleanup)
+      async.await(async.scheduler())
+
+      if not ok then
+        error(err)
+      end
+    end)
+  )
+
   describe("get_show_args", function()
     it(
       "includes --no-show-signature",

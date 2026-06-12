@@ -149,6 +149,7 @@ function GitAdapter.get_repo_paths(path_args, cpath)
     end
   end
 
+  ---@diagnostic disable-next-line: undefined-field
   VCSAdapter.append_implicit_indicators(top_indicators, cpath)
 
   return paths, top_indicators
@@ -205,7 +206,20 @@ local function normalize_cygwin_path(path)
   return path
 end
 
----Get the git toplevel directory from a path to file or directory
+---Check if one path is contained within another
+---@param base string
+---@param candidate string
+---@return boolean
+local function is_within(base, candidate)
+  base = pl:remove_trailing(base)
+  candidate = pl:remove_trailing(candidate)
+  return candidate == base or vim.startswith(candidate, pl:add_trailing(base))
+end
+
+---Get the git toplevel directory from a path to file or directory.
+---When an explicit `-C` points at a linked worktree-like location, git can
+---report the main worktree for `--show-toplevel` even though commands should
+---continue to execute from the given path.
 ---@param path string
 ---@return string?
 local function get_toplevel(path)
@@ -219,7 +233,15 @@ local function get_toplevel(path)
   if code ~= 0 then
     return nil
   end
-  return normalize_cygwin_path(out[1] and vim.trim(out[1]))
+
+  local toplevel = normalize_cygwin_path(out[1] and vim.trim(out[1]))
+  local cpath = pl:realpath(path)
+
+  if cpath and toplevel and pl:is_dir(cpath) and not is_within(toplevel, cpath) then
+    return cpath
+  end
+
+  return toplevel
 end
 
 ---@param top_indicators string[] A list of paths that might indicate what working tree we are in.
