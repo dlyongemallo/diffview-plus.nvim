@@ -24,6 +24,7 @@ local M = {}
 ---@field cur_layout Layout
 ---@field cur_entry FileEntry
 ---@field layouts table<Layout, Layout>
+---@field cursor_map table<string, table> # Repo-relative path → `winsaveview()` dict; consumed by `file_open_new` to restore cursor + viewport on first open after session restore.
 ---@field package _set_file_in_flight Future? # Active `_set_file` worker; queued callers await this so `await(set_file)` returns only after the latest pending file is opened.
 ---@field package _set_file_pending FileEntry? # Newest file queued while `_set_file_in_flight` is set; the worker picks it up before terminating.
 local StandardView = oop.create_class("StandardView", View.__get())
@@ -68,7 +69,61 @@ function StandardView:init(opt)
       diff4 = { a = {}, b = {}, c = {}, d = {} },
     }
 
+  self.cursor_map = opt.cursor_map or {}
+
+  -- Snapshot the leaving file's view state before `_detach_files_for_next`
+  -- strips the window association, so mid-navigation saves keep cursor +
+  -- viewport for every visited file.
+  self.emitter:on("file_open_pre", function(_, _, cur_entry)
+    if cur_entry and cur_entry.path then
+      self:snapshot_main_view(cur_entry.path)
+    end
+  end)
+
   self.emitter:on("post_layout", utils.bind(self.post_layout, self))
+end
+
+---Snapshot the main diff window's cursor + viewport into
+---`self.cursor_map[path]`. No-op if the main window is unavailable.
+---@param path string repo-relative file path; the map key.
+function StandardView:snapshot_main_view(path)
+  local layout = self.cur_layout
+  local main = layout and layout:get_main_win()
+  if not (main and main.id and api.nvim_win_is_valid(main.id)) then
+    return
+  end
+  local ok, vs = pcall(api.nvim_win_call, main.id, function()
+    return vim.fn.winsaveview()
+  end)
+  if ok and type(vs) == "table" then
+    self.cursor_map[path] = vs
+  end
+end
+
+---Pop and apply the saved `winsaveview` dict for `path`. One-shot per
+---path: the entry is removed once successfully applied, so re-visits
+---fall through to the caller's default cursor placement. A failed apply
+---(main window unavailable, or `winrestview` errors) leaves the saved
+---state in place so a later attempt can still restore it.
+---@param path string repo-relative file path.
+---@return boolean # `true` when a saved state was applied successfully.
+function StandardView:restore_main_view(path)
+  local target = self.cursor_map[path]
+  if target == nil then
+    return false
+  end
+  local layout = self.cur_layout
+  local win = layout and layout:get_main_win()
+  if not (win and win.id and api.nvim_win_is_valid(win.id)) then
+    return false
+  end
+  local ok = pcall(api.nvim_win_call, win.id, function()
+    vim.fn.winrestview(target)
+  end)
+  if ok then
+    self.cursor_map[path] = nil
+  end
+  return ok
 end
 
 ---@override

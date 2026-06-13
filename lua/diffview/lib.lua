@@ -17,6 +17,7 @@ local StandardView = lazy.access("diffview.scene.views.standard.standard_view", 
 local arg_parser = lazy.require("diffview.arg_parser") ---@module "diffview.arg_parser"
 local config = lazy.require("diffview.config") ---@module "diffview.config"
 local rev_lib = lazy.require("diffview.vcs.rev") ---@module "diffview.vcs.rev"
+local session = lazy.require("diffview.session") ---@module "diffview.session"
 local vcs = lazy.require("diffview.vcs") ---@module "diffview.vcs"
 local utils = lazy.require("diffview.utils") ---@module "diffview.utils"
 
@@ -111,6 +112,9 @@ function M.diffview_open(args)
   end
 
   table.insert(M.views, v)
+  -- Record at the canonical creation site so every caller (user
+  -- commands, `M.restore`, third-party plugins) gets session coverage.
+  session.record_view(v, "diffview_open", args)
   logger:debug("DiffView instantiation successful!")
 
   return v
@@ -206,6 +210,8 @@ function M.file_history(range, args)
   end
 
   table.insert(M.views, v)
+  -- See `M.diffview_open` for why recording happens here.
+  session.record_view(v, "file_history", args, range)
   logger:debug("FileHistoryView instantiation successful!")
 
   return v

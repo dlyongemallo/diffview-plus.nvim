@@ -39,6 +39,14 @@ return function(view)
       end
     end,
     file_open_new = function(_, entry)
+      -- See `DiffView`'s listener: drop bridged events from sibling
+      -- views, and replay saved cursor + viewport on first open.
+      if view.cur_entry ~= entry then
+        return
+      end
+      if view:restore_main_view(entry.path) then
+        return
+      end
       actions.jump_to_first_change(view)
     end,
     open_in_diffview = function()

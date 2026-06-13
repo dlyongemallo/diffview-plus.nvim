@@ -142,6 +142,7 @@ local conflict_keymaps = {
 ---@field diffopt table
 ---@field clean_up_buffers boolean
 ---@field persist_selections DiffviewPersistSelectionsConfig
+---@field restore_session boolean
 ---@field icons DiffviewIcons
 ---@field status_icons DiffviewStatusIcons
 ---@field signs DiffviewSigns
@@ -173,6 +174,7 @@ local conflict_keymaps = {
 ---@field diffopt? table Override `diffopt` while diffview is open. Restored on close.
 ---@field clean_up_buffers? boolean Delete file buffers created by diffview on close.
 ---@field persist_selections? DiffviewPersistSelectionsConfig.user Persist file selections across Neovim restarts.
+---@field restore_session? boolean Restore open Diffview/FileHistory views from a sourced Vim session.
 ---@field icons? DiffviewIcons.user Folder icons; only applies when `use_icons` is true.
 ---@field status_icons? DiffviewStatusIcons.user Icons for git status letters.
 ---@field signs? DiffviewSigns.user Sign characters used throughout the UI.
@@ -223,6 +225,7 @@ M.defaults = {
     enabled = false, -- Persist file selections to disk across Neovim restarts.
     path = nil, -- Storage path. Nil uses stdpath("data") .. "/diffview_selections.json".
   },
+  restore_session = true, -- Restore open Diffview/FileHistory views from a sourced Vim session.
 
   ---@class DiffviewIcons
   ---@field folder_closed string
@@ -409,7 +412,7 @@ M.defaults = {
     ---@field deletion_treesitter? boolean Layer tree-sitter syntax highlights over the deleted virt_lines so they read like the rest of the buffer. Falls back transparently when no parser is attached.
     -- Options specific to the `diff1_inline` layout.
     inline = {
-      -- Rendering style. "unified": proper unified diff — old lines shown
+      -- Rendering style. "unified": proper unified diff -- old lines shown
       -- above modifications as virt_lines, added chars highlighted in place.
       -- "overleaf": deleted chars on modified lines rendered inline as
       -- strikethrough virtual text (Overleaf-editor style); no block echo.
@@ -1506,6 +1509,7 @@ function M.setup(user_config)
   validate.integer(c, "large_file_threshold", d.large_file_threshold, { min = 0 })
   validate.table(c, "diffopt", d.diffopt)
   validate.boolean(c, "clean_up_buffers", d.clean_up_buffers)
+  validate.boolean(c, "restore_session", d.restore_session)
 
   -- persist_selections
   validate.table(c, "persist_selections", d.persist_selections)

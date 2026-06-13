@@ -675,6 +675,20 @@ clean_up_buffers                                *diffview-config-clean_up_buffer
         Only affects buffers that were not open before the Diffview was
         opened.
 
+restore_session                                 *diffview-config-restore_session*
+        Type: `boolean`, Default: `true`
+
+        Restore open `:DiffviewOpen` / `:DiffviewFileHistory` views from a
+        sourced Vim session, including per-file cursor and viewport. State
+        is written to a `<session>.diffview.json` sidecar alongside the
+        session file. Setting this to `false` still cleans up stale state
+        from a sourced session: `diffview://` buffers are wiped, and
+        unmodified file buffers that Diffview created in the prior session
+        (recorded in the sidecar) are unlisted, so they drop out of `:ls`
+        and `:bnext`.
+
+        See |diffview.changelog-session-restoration|.
+
 icons                                           *diffview-config-icons*
         Type: `table`, Default: (see defaults)
 

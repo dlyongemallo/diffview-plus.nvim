@@ -80,6 +80,8 @@ function DiffView:init(opt)
   })
 
   self.attached_bufs = {}
+  DiffView._seed_cursor_map_from_selection(self.cursor_map, self.options)
+
   self.emitter:on("file_open_post", utils.bind(self.file_open_post, self))
   self:_init_selection_events()
   self.valid = true
@@ -643,6 +645,18 @@ DiffView.get_updated_files = async.wrap(function(self, callback)
   }, callback)
 end)
 
+---Seed `cursor_map` from `--selected-row`/`--selected-file` so the first-open
+---listener handles it the same as session-restored state. `winrestview` (the
+---consumer in `restore_main_view`) clamps the upper bound; we clamp the
+---lower at 1 so non-positive rows don't reach `nvim_win_set_cursor`.
+---@param cursor_map table<string, table>
+---@param options DiffViewOptions
+function DiffView._seed_cursor_map_from_selection(cursor_map, options)
+  if options.selected_row and options.selected_file then
+    cursor_map[options.selected_file] = { lnum = math.max(1, options.selected_row) }
+  end
+end
+
 ---Determine whether to focus the diff window on initial open.
 ---@param next_file FileEntry?
 ---@return boolean
@@ -948,17 +962,8 @@ local update_files_impl = debounce.debounce_trailing(
       self:set_file(next_file, focus, not self.initialized or nil)
     end
 
-    -- Position cursor at the requested row on first open.
-    if not self.initialized and self.options.selected_row then
-      local win = self.cur_layout:get_main_win()
-      if win and api.nvim_win_is_valid(win.id) then
-        api.nvim_set_current_win(win.id)
-        local buf = api.nvim_win_get_buf(win.id)
-        local line_count = api.nvim_buf_line_count(buf)
-        local row = math.min(self.options.selected_row, line_count)
-        pcall(api.nvim_win_set_cursor, win.id, { math.max(1, row), 0 })
-      end
-    end
+    -- Cursor positioning lives in the `file_open_new` listener; setting
+    -- it here races the async file open and gets overwritten.
 
     self.update_needed = false
     perf:time()

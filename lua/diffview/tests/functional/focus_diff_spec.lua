@@ -106,108 +106,167 @@ describe("DiffView._should_focus_diff", function()
   end)
 end)
 
-describe("DiffView selected_row focuses main window", function()
-  local orig_set_current_win, orig_win_is_valid, orig_win_get_buf
-  local orig_buf_line_count, orig_win_set_cursor
+-- `--selected-row` is an explicit "land me here" request, so it focuses
+-- the main diff window on the targeted file regardless of `focus_diff`.
+-- Session restore reuses the `cursor_map` plumbing but must not yank
+-- focus, so the listener discriminates on `view.options.selected_row`.
+describe("file_open_new listener: --selected-row focus", function()
+  local listeners_factory = require("diffview.scene.views.diff.listeners")
+  local actions = require("diffview.actions")
+
+  local MAIN_WIN_ID = 77
+
+  local stubs = {}
+  local focused
+
+  --- Replace tbl[key] with val, automatically restored in after_each.
+  local function stub(tbl, key, val)
+    stubs[#stubs + 1] = { tbl, key, tbl[key] }
+    tbl[key] = val
+  end
 
   before_each(function()
-    orig_set_current_win = vim.api.nvim_set_current_win
-    orig_win_is_valid = vim.api.nvim_win_is_valid
-    orig_win_get_buf = vim.api.nvim_win_get_buf
-    orig_buf_line_count = vim.api.nvim_buf_line_count
-    orig_win_set_cursor = vim.api.nvim_win_set_cursor
+    focused = nil
+    stub(vim.api, "nvim_set_current_win", function(id)
+      focused = id
+    end)
+    stub(vim.api, "nvim_win_is_valid", function()
+      return true
+    end)
   end)
 
   after_each(function()
-    vim.api.nvim_set_current_win = orig_set_current_win
-    vim.api.nvim_win_is_valid = orig_win_is_valid
-    vim.api.nvim_win_get_buf = orig_win_get_buf
-    vim.api.nvim_buf_line_count = orig_buf_line_count
-    vim.api.nvim_win_set_cursor = orig_win_set_cursor
+    for i = #stubs, 1, -1 do
+      local s = stubs[i]
+      s[1][s[2]] = s[3]
+    end
+    stubs = {}
   end)
 
-  it("calls nvim_set_current_win on the main window", function()
-    local focused_win = nil
-    local cursor_set = nil
-    local main_win_id = 77
-
-    vim.api.nvim_win_is_valid = function()
-      return true
-    end
-    vim.api.nvim_set_current_win = function(id)
-      focused_win = id
-    end
-    vim.api.nvim_win_get_buf = function()
-      return 1
-    end
-    vim.api.nvim_buf_line_count = function()
-      return 100
-    end
-    vim.api.nvim_win_set_cursor = function(id, pos)
-      cursor_set = { id = id, pos = pos }
-    end
-
-    -- Simulate the selected_row block from update_files.
-    local initialized = false
-    local selected_row = 42
-    local cur_layout = {
-      get_main_win = function()
-        return { id = main_win_id }
+  local function make_view(opts)
+    opts = opts or {}
+    return {
+      cur_entry = nil,
+      options = opts.options,
+      cur_layout = {
+        get_main_win = function()
+          return { id = MAIN_WIN_ID }
+        end,
+      },
+      restore_main_view = function()
+        return opts.restore_returns ~= false
       end,
+      panel = {},
+      adapter = {},
     }
+  end
 
-    if not initialized and selected_row then
-      local win = cur_layout:get_main_win()
-      if win and vim.api.nvim_win_is_valid(win.id) then
-        vim.api.nvim_set_current_win(win.id)
-        local buf = vim.api.nvim_win_get_buf(win.id)
-        local line_count = vim.api.nvim_buf_line_count(buf)
-        local row = math.min(selected_row, line_count)
-        pcall(vim.api.nvim_win_set_cursor, win.id, { math.max(1, row), 0 })
-      end
-    end
+  it("focuses the main window when selected_row + matching file are set", function()
+    local view = make_view({
+      options = { selected_row = 42, selected_file = "foo.lua" },
+    })
+    local listeners = listeners_factory(view)
+    local entry = { path = "foo.lua" }
+    view.cur_entry = entry
 
-    assert.equals(main_win_id, focused_win)
-    assert.equals(main_win_id, cursor_set.id)
-    assert.same({ 42, 0 }, cursor_set.pos)
+    listeners.file_open_new(nil, entry)
+    assert.equals(MAIN_WIN_ID, focused)
+    -- One-shot: re-visits must not re-focus.
+    assert.is_nil(view.options.selected_row)
   end)
 
-  it("clamps row to buffer line count", function()
-    local cursor_set = nil
+  it("does not focus when selected_row is unset (session-restore path)", function()
+    local view = make_view({
+      options = { selected_file = "foo.lua" },
+    })
+    local listeners = listeners_factory(view)
+    local entry = { path = "foo.lua" }
+    view.cur_entry = entry
 
-    vim.api.nvim_win_is_valid = function()
-      return true
-    end
-    vim.api.nvim_set_current_win = function() end
-    vim.api.nvim_win_get_buf = function()
-      return 1
-    end
-    vim.api.nvim_buf_line_count = function()
-      return 10
-    end
-    vim.api.nvim_win_set_cursor = function(id, pos)
-      cursor_set = { id = id, pos = pos }
-    end
+    listeners.file_open_new(nil, entry)
+    assert.is_nil(focused)
+  end)
 
-    local initialized = false
-    local selected_row = 999
-    local cur_layout = {
-      get_main_win = function()
-        return { id = 1 }
-      end,
-    }
+  it("does not focus when selected_file does not match the opened entry", function()
+    local view = make_view({
+      options = { selected_row = 42, selected_file = "other.lua" },
+    })
+    local listeners = listeners_factory(view)
+    local entry = { path = "foo.lua" }
+    view.cur_entry = entry
 
-    if not initialized and selected_row then
-      local win = cur_layout:get_main_win()
-      if win and vim.api.nvim_win_is_valid(win.id) then
-        vim.api.nvim_set_current_win(win.id)
-        local buf = vim.api.nvim_win_get_buf(win.id)
-        local line_count = vim.api.nvim_buf_line_count(buf)
-        local row = math.min(selected_row, line_count)
-        pcall(vim.api.nvim_win_set_cursor, win.id, { math.max(1, row), 0 })
-      end
-    end
+    listeners.file_open_new(nil, entry)
+    assert.is_nil(focused)
+    -- selected_row belongs to a different file; leave it untouched.
+    assert.equals(42, view.options.selected_row)
+  end)
 
-    assert.same({ 10, 0 }, cursor_set.pos)
+  it("does not focus when restore_main_view returns false", function()
+    local view = make_view({
+      options = { selected_row = 42, selected_file = "foo.lua" },
+      restore_returns = false,
+    })
+    local listeners = listeners_factory(view)
+    local entry = { path = "foo.lua" }
+    view.cur_entry = entry
+
+    -- Stub `jump_to_first_change` so we don't dive into real action code.
+    stub(actions, "jump_to_first_change", function() end)
+
+    listeners.file_open_new(nil, entry)
+    assert.is_nil(focused)
+  end)
+end)
+
+describe("DiffView._seed_cursor_map_from_selection", function()
+  local DiffView = require("diffview.scene.views.diff.diff_view").DiffView
+
+  it("populates cursor_map with the selected row when both args are set", function()
+    local cursor_map = {}
+    DiffView._seed_cursor_map_from_selection(cursor_map, {
+      selected_row = 42,
+      selected_file = "foo.lua",
+    })
+    assert.same({ lnum = 42 }, cursor_map["foo.lua"])
+  end)
+
+  it("clamps the row to 1 when selected_row is 0", function()
+    local cursor_map = {}
+    DiffView._seed_cursor_map_from_selection(cursor_map, {
+      selected_row = 0,
+      selected_file = "foo.lua",
+    })
+    assert.same({ lnum = 1 }, cursor_map["foo.lua"])
+  end)
+
+  it("clamps the row to 1 when selected_row is negative", function()
+    local cursor_map = {}
+    DiffView._seed_cursor_map_from_selection(cursor_map, {
+      selected_row = -5,
+      selected_file = "foo.lua",
+    })
+    assert.same({ lnum = 1 }, cursor_map["foo.lua"])
+  end)
+
+  it("leaves cursor_map untouched when selected_file is missing", function()
+    local cursor_map = {}
+    DiffView._seed_cursor_map_from_selection(cursor_map, { selected_row = 42 })
+    assert.same({}, cursor_map)
+  end)
+
+  it("leaves cursor_map untouched when selected_row is missing", function()
+    local cursor_map = {}
+    DiffView._seed_cursor_map_from_selection(cursor_map, { selected_file = "foo.lua" })
+    assert.same({}, cursor_map)
+  end)
+
+  it("does not overwrite unrelated entries", function()
+    local cursor_map = { ["other.lua"] = { lnum = 7, col = 3 } }
+    DiffView._seed_cursor_map_from_selection(cursor_map, {
+      selected_row = 42,
+      selected_file = "foo.lua",
+    })
+    assert.same({ lnum = 7, col = 3 }, cursor_map["other.lua"])
+    assert.same({ lnum = 42 }, cursor_map["foo.lua"])
   end)
 end)

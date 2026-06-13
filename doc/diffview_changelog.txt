@@ -5,6 +5,20 @@ CHANGELOG
 
 NOTE: Breaking changes and notable feature additions are listed here.
 
+                                                *diffview.changelog-session-restoration*
+
+Open `:DiffviewOpen` and `:DiffviewFileHistory` views now survive a
+`:mksession` + `:source Session.vim` round trip. Per-file cursor and
+viewport are restored for every file visited in the saved session.
+
+State is written to a `<session>.diffview.json` sidecar on
+`:mksession` and `VimLeave`, and replayed on `SessionLoadPost`.
+Gated by `|diffview-config-restore_session|` (default `true`).
+
+Session managers that run `-c "DiffviewOpen ..."` at startup should
+defer the open past `VimEnter`; otherwise the tab is created before
+the session is sourced and the manager's `%bw!` strands its buffers.
+
                                                 *diffview.changelog-jj-adapter*
 
 ISSUE: https://github.com/sindrets/diffview.nvim/issues/562

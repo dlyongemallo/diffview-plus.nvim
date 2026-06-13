@@ -111,6 +111,33 @@ return function(view)
       retry_auto_close()
     end,
     file_open_new = function(_, entry)
+      -- `file_open_new` is bridged via `DiffviewGlobal.emitter` →
+      -- current view's emitter, so while multiple views are restoring
+      -- in parallel an event from view A can arrive bound to view B's
+      -- closure. Drop events that aren't ours.
+      if view.cur_entry ~= entry then
+        return
+      end
+
+      -- Session-restored entries: replay the saved cursor + viewport
+      -- instead of jumping to the first hunk. `restore_main_view` is
+      -- one-shot, so re-visits in the same nvim run fall through.
+      if view:restore_main_view(entry.path) then
+        -- Per-invocation `--selected-row` is an explicit "land me here"
+        -- request, so it focuses the main diff window on the targeted
+        -- file regardless of `focus_diff`. Session restore reuses the
+        -- `cursor_map` plumbing but must not yank focus, so we
+        -- discriminate by `selected_row`: only the CLI path sets it.
+        local opts = view.options
+        if opts and opts.selected_row and opts.selected_file == entry.path then
+          local win = view.cur_layout and view.cur_layout:get_main_win()
+          if win and win.id and api.nvim_win_is_valid(win.id) then
+            api.nvim_set_current_win(win.id)
+          end
+          opts.selected_row = nil
+        end
+        return
+      end
       actions.jump_to_first_change(view)
     end,
     ---@diagnostic disable-next-line: unused-local
