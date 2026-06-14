@@ -40,6 +40,7 @@ local M = {}
 ---@class vcs.adapter.VCSAdapter.Ctx
 ---@field toplevel? string # VCS repository toplevel directory
 ---@field dir? string # VCS directory
+---@field git_override? string[] # Global flags pinning the git dir and work tree when they diverge
 ---@field path_args? string[] # Resolved path arguments
 
 ---@class VCSAdapter: diffview.Object

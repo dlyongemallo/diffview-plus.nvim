@@ -262,13 +262,37 @@ function GitAdapter:init(opt)
   opt = opt or {}
   self:super(opt)
 
-  local cwd = opt.cpath or uv.cwd()
+  -- The git dir is normally discovered from the toplevel. When an explicit
+  -- `-C` directory is given that resolves to a different git dir than the
+  -- toplevel does, we're looking at a snapshot- or worktree-style layout where
+  -- a separate git dir has its work tree pointed back at the toplevel (e.g.,
+  -- via `core.worktree`, as snapshot tooling does). The toplevel is then the
+  -- work tree, but the history lives in the git dir found from the `-C`
+  -- directory. Pin both with `--git-dir` and `--work-tree` (see `get_command`)
+  -- so every command targets the intended repository regardless of the
+  -- directory it runs in.
+  local git_dir = self:get_dir(opt.toplevel)
+  local pathspec_cwd = opt.cpath or uv.cwd()
+  local git_override
+
+  if opt.cpath then
+    local exec_git_dir = self:get_dir(opt.cpath)
+
+    if exec_git_dir and exec_git_dir ~= git_dir then
+      git_dir = exec_git_dir
+      git_override = { "--git-dir=" .. git_dir, "--work-tree=" .. opt.toplevel }
+      -- Pathspecs are resolved against the work tree root in this layout, since
+      -- the `-C` directory isn't a location inside the work tree.
+      pathspec_cwd = opt.toplevel
+    end
+  end
 
   self.ctx = {
     toplevel = opt.toplevel,
-    dir = self:get_dir(opt.toplevel),
+    dir = git_dir,
+    git_override = git_override,
     path_args = vim.tbl_map(function(pathspec)
-      return GitAdapter.pathspec_expand(opt.toplevel, cwd, pathspec)
+      return GitAdapter.pathspec_expand(opt.toplevel, pathspec_cwd, pathspec)
     end, opt.path_args or {}) --[[@as string[] ]],
   }
 
@@ -276,7 +300,14 @@ function GitAdapter:init(opt)
 end
 
 function GitAdapter:get_command()
-  return config.get_config().git_cmd
+  local cmd = config.get_config().git_cmd
+  local override = self.ctx and self.ctx.git_override
+
+  if override then
+    return utils.vec_join(cmd, override)
+  end
+
+  return cmd
 end
 
 ---@param path string
