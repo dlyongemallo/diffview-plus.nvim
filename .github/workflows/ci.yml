@@ -18,6 +18,34 @@ env:
   NVIM_TYPECHECK_VERSION: v0.12.2
 
 jobs:
+  commit-style:
+    runs-on: ubuntu-latest
+    name: Conventional commits
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Skip GitHub's synthetic merge commit (would fail `cz check`).
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install commitizen
+        run: pip install commitizen
+
+      - name: Lint commits
+        run: |
+          range="origin/${{ github.base_ref }}..HEAD"
+          if [ -z "$(git rev-list "$range")" ]; then
+            echo "No new commits vs base; skipping cz check."
+            exit 0
+          fi
+          cz check --rev-range "$range"
+
   lint:
     runs-on: ubuntu-latest
     name: Lint (stylua)
