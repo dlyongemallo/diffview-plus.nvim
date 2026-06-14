@@ -182,6 +182,9 @@ PR review, merge conflicts, file history, and more.
 - **[gitsigns.nvim](https://github.com/lewis6991/gitsigns.nvim)** — When
   installed and `watch_index` is enabled (the default), the file panel
   refreshes instantly after staging or unstaging hunks via gitsigns.
+- **[gitgraph.nvim](https://github.com/isakbm/gitgraph.nvim)** — Draws
+  a commit graph and can open the commit (or a visual range) under the
+  cursor in `diffview+`. See [RECIPES.md](RECIPES.md) for setup.
 - **[Neogit](https://github.com/NeogitOrg/neogit)** — Git porcelain with
   built-in diffview integration (`integrations = { diffview = true }`).
 

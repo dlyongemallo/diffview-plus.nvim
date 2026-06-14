@@ -307,4 +307,42 @@ end, { desc = 'Diffview commit' })
 
 </details>
 
+<details>
+<summary><b>Commit Graph</b></summary>
+
+To browse a commit graph and open its commits in diffview, you have two
+options. [Neogit](https://github.com/NeogitOrg/neogit) renders a graph
+natively (`graph_style = "unicode"` or `"kitty"`) and opens diffs through
+its diffview integration. Alternatively,
+[gitgraph.nvim](https://github.com/isakbm/gitgraph.nvim) is a lightweight,
+graph-only alternative.
+
+gitgraph draws the graph and exposes `on_select_commit` /
+`on_select_range_commit` hooks. Wire them to `:DiffviewOpen` so that pressing
+`<CR>` on a commit or a visual selection opens it in diffview's layouts.
+
+```lua
+require("gitgraph").setup({
+  hooks = {
+    -- <CR> on a commit: show that commit's own changes.
+    on_select_commit = function(commit)
+      vim.cmd("DiffviewOpen " .. commit.hash .. "^!")
+    end,
+    -- <CR> over a visual range: diff the whole selected range.
+    on_select_range_commit = function(from, to)
+      vim.cmd("DiffviewOpen " .. from.hash .. "~1.." .. to.hash)
+    end,
+  },
+})
+
+vim.keymap.set("n", "<leader>dg", function()
+  require("gitgraph").draw({}, { all = true, max_count = 5000 })
+end, { desc = "Commit graph" })
+```
+
+gitgraph can render the graph with plain box-drawing characters or with Kitty
+terminal branch glyphs via its `symbols` table; see its README for details.
+
+</details>
+
 <!-- vim: set tw=80 -->
