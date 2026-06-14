@@ -14,21 +14,11 @@ local helpers = require("diffview.tests.helpers")
 local lib = require("diffview.lib")
 
 local eq = helpers.eq
-
-local function run(cmd, cwd)
-  local res = vim.system(cmd, { cwd = cwd, text = true }):wait()
-  assert.equals(0, res.code, (table.concat(cmd, " ") .. "\n" .. (res.stderr or "")))
-  return vim.trim(res.stdout or "")
-end
+local run = helpers.run
 
 -- Build a tempdir git repo with a single committed file.
 local function make_git_repo()
-  local repo = vim.fn.tempname()
-  vim.fn.mkdir(repo, "p")
-
-  run({ "git", "init", "-q" }, repo)
-  run({ "git", "config", "user.name", "Diffview Test" }, repo)
-  run({ "git", "config", "user.email", "diffview@test.local" }, repo)
+  local repo = helpers.init_repo()
 
   local f = assert(io.open(repo .. "/foo.txt", "w"))
   f:write("hello\n")

@@ -6,11 +6,7 @@ local RevType = require("diffview.vcs.rev").RevType
 local config = require("diffview.config")
 local test_utils = require("diffview.tests.helpers")
 
-local function run(cmd, cwd, env)
-  local res = vim.system(cmd, { cwd = cwd, env = env, text = true }):wait()
-  assert.equals(0, res.code, (table.concat(cmd, " ") .. "\n" .. (res.stderr or "")))
-  return vim.trim(res.stdout or "")
-end
+local run = test_utils.run
 
 local function make_dir()
   local d = assert(vim.fn.tempname())
@@ -44,7 +40,7 @@ local function make_snapshot_repo()
   -- The store dir itself is the git dir; `GIT_WORK_TREE` makes init record
   -- `core.worktree`, so `--show-toplevel` from the store reports `project`.
   local store = make_dir()
-  run({ "git", "init", "-q" }, project, { GIT_DIR = store, GIT_WORK_TREE = project })
+  run({ "git", "init", "-q" }, project, { env = { GIT_DIR = store, GIT_WORK_TREE = project } })
 
   -- Share the project's object database, as snapshot tooling does.
   local common = run({ "git", "rev-parse", "--path-format=absolute", "--git-common-dir" }, project)

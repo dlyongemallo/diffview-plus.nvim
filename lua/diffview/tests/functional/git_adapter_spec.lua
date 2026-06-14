@@ -6,30 +6,11 @@ local Job = require("diffview.job").Job
 local RevType = require("diffview.vcs.rev").RevType
 local test_utils = require("diffview.tests.helpers")
 
-local function run(cmd, cwd)
-  local res = vim.system(cmd, { cwd = cwd, text = true }):wait()
-  assert.equals(0, res.code, (table.concat(cmd, " ") .. "\n" .. (res.stderr or "")))
-  return vim.trim(res.stdout or "")
-end
+local run = test_utils.run
 
---- Helper: create a temporary git repo and return {repo, adapter} or propagate
---- errors via the ok/err pattern used by the existing test.
+--- Create a temporary git repo with one commit and an adapter for it.
 local function make_repo_and_adapter()
-  local repo = vim.fn.tempname()
-  assert.equals(1, vim.fn.mkdir(repo, "p"))
-
-  run({ "git", "init", "-q" }, repo)
-  run({ "git", "config", "user.name", "Diffview Test" }, repo)
-  run({ "git", "config", "user.email", "diffview@test.local" }, repo)
-
-  -- Need at least one commit so HEAD exists.
-  local path = repo .. "/init.txt"
-  local f = assert(io.open(path, "w"))
-  f:write("init\n")
-  f:close()
-
-  run({ "git", "add", "init.txt" }, repo)
-  run({ "git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "init" }, repo)
+  local repo = test_utils.make_repo()
 
   local adapter = GitAdapter({
     toplevel = repo,

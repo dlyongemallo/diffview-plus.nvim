@@ -1,4 +1,3 @@
-local api = vim.api
 local async = require("diffview.async")
 local config = require("diffview.config")
 local helpers = require("diffview.tests.helpers")
@@ -13,12 +12,9 @@ local RevType = require("diffview.vcs.rev").RevType
 
 local await = async.await
 local eq = helpers.eq
-
-local function run(cmd, cwd)
-  local res = vim.system(cmd, { cwd = cwd, text = true }):wait()
-  assert.equals(0, res.code, (table.concat(cmd, " ") .. "\n" .. (res.stderr or "")))
-  return vim.trim(res.stdout or "")
-end
+local run = helpers.run
+local cleanup_repo = helpers.cleanup_repo
+local close_view = helpers.close_view
 
 -- Build a repo with two entries that land on different layout classes under
 -- `view.one_sided_layout = "raw"`:
@@ -27,12 +23,7 @@ end
 -- Stepping between them via `view:set_file` therefore exercises the swap
 -- branch in `StandardView.use_entry`.
 local function make_repo()
-  local repo = vim.fn.tempname()
-  assert.equals(1, vim.fn.mkdir(repo, "p"))
-
-  run({ "git", "init", "-q" }, repo)
-  run({ "git", "config", "user.name", "Diffview Test" }, repo)
-  run({ "git", "config", "user.email", "diffview@test.local" }, repo)
+  local repo = helpers.init_repo()
 
   local existing = repo .. "/existing.txt"
   local f = assert(io.open(existing, "w"))
@@ -51,23 +42,6 @@ local function make_repo()
   f:close()
 
   return repo
-end
-
-local function cleanup_repo(repo)
-  vim.schedule(function()
-    pcall(vim.fn.delete, repo, "rf")
-  end)
-  await(async.scheduler())
-end
-
-local function close_view(view)
-  if not view then
-    return
-  end
-  if view.tabpage and api.nvim_tabpage_is_valid(view.tabpage) then
-    view:close()
-  end
-  require("diffview.lib").dispose_view(view)
 end
 
 describe("StandardView.use_entry layout-swap focus (integration)", function()

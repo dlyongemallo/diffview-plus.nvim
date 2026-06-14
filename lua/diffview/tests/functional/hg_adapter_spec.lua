@@ -6,12 +6,7 @@ local helpers = require("diffview.tests.helpers")
 
 local await = async.await
 local eq = helpers.eq
-
-local function run(cmd, cwd)
-  local res = vim.system(cmd, { cwd = cwd, text = true }):wait()
-  assert.equals(0, res.code, (table.concat(cmd, " ") .. "\n" .. (res.stderr or "")))
-  return vim.trim(res.stdout or "")
-end
+local run = helpers.run
 
 local function hg_available()
   return vim.fn.executable("hg") == 1

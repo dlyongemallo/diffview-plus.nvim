@@ -6,13 +6,7 @@ local RevType = require("diffview.vcs.rev").RevType
 local test_utils = require("diffview.tests.helpers")
 
 local await = async.await
-
---- Run a shell command synchronously.
-local function run(cmd, cwd, env)
-  local res = vim.system(cmd, { cwd = cwd, text = true, env = env }):wait()
-  assert.equals(0, res.code, (table.concat(cmd, " ") .. "\n" .. (res.stderr or "")))
-  return vim.trim(res.stdout or "")
-end
+local run = test_utils.run
 
 --- Return true when both `p4` and `p4d` are available on $PATH.
 local function p4_available()
@@ -39,10 +33,10 @@ local function create_p4_repo()
   }
 
   -- Initialise the server database.
-  run({ "p4d", "-r", p4root, "-jr", "/dev/null" }, nil, env)
+  run({ "p4d", "-r", p4root, "-jr", "/dev/null" }, nil, { env = env })
 
   -- Create a client workspace.
-  local spec = run({ "p4", "client", "-o", p4client }, workspace, env)
+  local spec = run({ "p4", "client", "-o", p4client }, workspace, { env = env })
   spec = spec:gsub("Root:\t[^\n]+", "Root:\t" .. workspace)
   vim.fn.system({ "p4", "-p", p4port, "-u", p4user, "client", "-i" }, spec)
   assert.equals(0, vim.v.shell_error, "p4 client -i failed")
@@ -58,7 +52,7 @@ local function create_p4_repo()
     p4 = function(args)
       local cmd = vim.list_extend({}, base_args)
       vim.list_extend(cmd, args)
-      return run(cmd, workspace, env)
+      return run(cmd, workspace, { env = env })
     end,
     --- Write a file relative to the workspace root.
     write = function(relpath, content)

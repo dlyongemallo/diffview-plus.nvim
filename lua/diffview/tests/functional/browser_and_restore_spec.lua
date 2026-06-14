@@ -1,5 +1,4 @@
 local actions = require("diffview.actions")
-local async = require("diffview.async")
 local helpers = require("diffview.tests.helpers")
 local lib = require("diffview.lib")
 local utils = require("diffview.utils")
@@ -10,12 +9,7 @@ local Node = require("diffview.ui.models.file_tree.node").Node
 local RevType = require("diffview.vcs.rev").RevType
 
 local eq = helpers.eq
-
-local function run(cmd, cwd)
-  local res = vim.system(cmd, { cwd = cwd, text = true }):wait()
-  assert.equals(0, res.code, (table.concat(cmd, " ") .. "\n" .. (res.stderr or "")))
-  return vim.trim(res.stdout or "")
-end
+local run = helpers.run
 
 -----------------------------------------------------------------------
 -- 8f55f8d: open_commit_in_browser -- get_commit_url URL construction.
@@ -25,20 +19,7 @@ describe("GitAdapter:get_commit_url (8f55f8d)", function()
   local repo, adapter
 
   before_each(function()
-    repo = vim.fn.tempname()
-    assert.equals(1, vim.fn.mkdir(repo, "p"))
-
-    run({ "git", "init", "-q" }, repo)
-    run({ "git", "config", "user.name", "Diffview Test" }, repo)
-    run({ "git", "config", "user.email", "diffview@test.local" }, repo)
-
-    local path = repo .. "/init.txt"
-    local f = assert(io.open(path, "w"))
-    f:write("init\n")
-    f:close()
-
-    run({ "git", "add", "init.txt" }, repo)
-    run({ "git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "init" }, repo)
+    repo = helpers.make_repo()
 
     adapter = GitAdapter({
       toplevel = repo,

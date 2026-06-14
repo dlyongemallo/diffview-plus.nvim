@@ -6,21 +6,10 @@ local GitRev = require("diffview.vcs.adapters.git.rev").GitRev
 local RevType = require("diffview.vcs.rev").RevType
 local test_utils = require("diffview.tests.helpers")
 
-local function run(cmd, cwd, allow_nonzero)
-  local res = vim.system(cmd, { cwd = cwd, text = true }):wait()
-  if not allow_nonzero then
-    assert.equals(0, res.code, (table.concat(cmd, " ") .. "\n" .. (res.stderr or "")))
-  end
-  return res
-end
+local run = test_utils.system
 
 local function setup_repo(case_name)
-  local repo = vim.fn.tempname()
-  assert.equals(1, vim.fn.mkdir(repo, "p"))
-
-  run({ "git", "init", "-q" }, repo)
-  run({ "git", "config", "user.name", "Diffview Test" }, repo)
-  run({ "git", "config", "user.email", "diffview@test.local" }, repo)
+  local repo = test_utils.init_repo()
   local base_branch = vim.trim(run({ "git", "symbolic-ref", "--short", "HEAD" }, repo).stdout or "")
 
   if case_name == "modify_modify" then
@@ -46,7 +35,7 @@ local function setup_repo(case_name)
     run({ "git", "add", "conflict.txt" }, repo)
     run({ "git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "main" }, repo)
 
-    local merge = run({ "git", "merge", "--no-edit", "side" }, repo, true)
+    local merge = run({ "git", "merge", "--no-edit", "side" }, repo, { allow_nonzero = true })
     assert.is_true(merge.code ~= 0)
 
     return repo, "conflict.txt"
@@ -70,7 +59,7 @@ local function setup_repo(case_name)
     run({ "git", "add", "delete_conflict.txt" }, repo)
     run({ "git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "modify" }, repo)
 
-    local merge = run({ "git", "merge", "--no-edit", "side" }, repo, true)
+    local merge = run({ "git", "merge", "--no-edit", "side" }, repo, { allow_nonzero = true })
     assert.is_true(merge.code ~= 0)
 
     return repo, "delete_conflict.txt"
