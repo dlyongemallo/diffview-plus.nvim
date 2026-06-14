@@ -26,6 +26,11 @@ function M.setup()
   vim.g.loaded_netrw = 1
   vim.g.loaded_netrwPlugin = 1
   vim.cmd([[set runtimepath=$VIMRUNTIME]])
+  -- Swap files serve no purpose in the headless test runner and force
+  -- Neovim to lazily create the swap directory under `XDG_STATE_HOME`,
+  -- which can intermittently fail with E303 when that mkdir races other
+  -- state writes. Disable them so tests can create named buffers freely.
+  vim.opt.swapfile = false
   vim.opt.runtimepath:append(M.root())
   vim.opt.packpath = { M.root(".tests/site") }
   M.load("nvim-lua/plenary.nvim")
