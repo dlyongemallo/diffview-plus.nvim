@@ -208,6 +208,42 @@ describe("diffview.vcs.adapters.jj", function()
     end)
   end)
 
+  describe("get_show_args()", function()
+    it("wraps the path in an exact-file fileset pattern", function()
+      local adapter = new_adapter()
+      local args = adapter:get_show_args("src/main.lua", adapter.Rev(RevType.COMMIT, "abc123"))
+
+      eq({ "file", "show", "-r", "abc123", "--", 'file:"src/main.lua"' }, args)
+    end)
+
+    it("escapes fileset metacharacters so jj matches the path literally", function()
+      local adapter = new_adapter()
+      -- Svelte route groups use parentheses, which are fileset operators in jj.
+      local args = adapter:get_show_args(
+        "frontend/src/routes/(test)/View.svelte",
+        adapter.Rev(RevType.COMMIT, "abc123")
+      )
+
+      eq('file:"frontend/src/routes/(test)/View.svelte"', args[#args])
+    end)
+
+    it("uses the exact-file kind so glob symbols match literally", function()
+      local adapter = new_adapter()
+      -- The `file:` kind disables glob expansion, so `[1]` is not a character
+      -- class and the bracketed filename resolves to itself.
+      local args = adapter:get_show_args("a[1].txt", adapter.Rev(RevType.COMMIT, "abc123"))
+
+      eq('file:"a[1].txt"', args[#args])
+    end)
+
+    it("backslash-escapes embedded quotes and backslashes", function()
+      local adapter = new_adapter()
+      local args = adapter:get_show_args([[a"b\c.txt]], adapter.Rev(RevType.COMMIT, "abc123"))
+
+      eq([[file:"a\"b\\c.txt"]], args[#args])
+    end)
+  end)
+
   describe("_warn_once()", function()
     local orig_warn
 
@@ -359,7 +395,7 @@ describe("diffview.vcs.adapters.jj", function()
 
         eq(true, ok)
         eq(":!jj op undo", undo)
-        eq({ "restore", "--from", "@-", "--", "src/main.lua" }, captured_args)
+        eq({ "restore", "--from", "@-", "--", 'file:"src/main.lua"' }, captured_args)
       end)
     )
 
@@ -376,7 +412,7 @@ describe("diffview.vcs.adapters.jj", function()
         local ok = await(adapter:file_restore("src/main.lua", "working", "abcdef"))
 
         eq(true, ok)
-        eq({ "restore", "--from", "abcdef", "--", "src/main.lua" }, captured_args)
+        eq({ "restore", "--from", "abcdef", "--", 'file:"src/main.lua"' }, captured_args)
       end)
     )
 
@@ -561,6 +597,60 @@ describe("diffview.vcs.adapters.jj", function()
           assert.is_nil(err)
           assert.is_not_nil(content)
           assert.equals("hello world", vim.trim(table.concat(content, "\n")))
+        end)
+      )
+
+      it(
+        "shows file content for a path containing fileset metacharacters",
+        helpers.async_test(function()
+          if not jj_available() then
+            pending("jj not installed")
+            return
+          end
+
+          -- Svelte route groups embed parentheses in the path, which jj reads
+          -- as fileset operators unless the path is quoted (regression test
+          -- for the "Failed to parse fileset" error on `:DiffviewOpen`).
+          local path = "frontend/src/routes/(test)/View.svelte"
+          repo.write(path, "<svelte/>\n")
+          repo.jj({ "describe", "-m", "add svelte route group" })
+
+          local adapter = repo.adapter()
+          local commit_id = run({ "jj", "show", "-T", "commit_id", "@", "--no-patch" }, repo.dir)
+          local rev = adapter.Rev(RevType.COMMIT, commit_id)
+
+          local err, content = await(adapter:show(path, rev))
+
+          assert.is_nil(err)
+          assert.is_not_nil(content)
+          assert.equals("<svelte/>", vim.trim(table.concat(content, "\n")))
+        end)
+      )
+
+      it(
+        "shows the exact file when a glob-collision sibling exists",
+        helpers.async_test(function()
+          if not jj_available() then
+            pending("jj not installed")
+            return
+          end
+
+          -- `a[1].txt` would be a glob character class matching `a1.txt` under
+          -- jj's default pattern kind. The exact-file (`file:`) kind must pin
+          -- the lookup to the literally-named file, not its glob sibling.
+          repo.write("a[1].txt", "BRACKET\n")
+          repo.write("a1.txt", "GLOBBED\n")
+          repo.jj({ "describe", "-m", "add glob-collision files" })
+
+          local adapter = repo.adapter()
+          local commit_id = run({ "jj", "show", "-T", "commit_id", "@", "--no-patch" }, repo.dir)
+          local rev = adapter.Rev(RevType.COMMIT, commit_id)
+
+          local err, content = await(adapter:show("a[1].txt", rev))
+
+          assert.is_nil(err)
+          assert.is_not_nil(content)
+          assert.equals("BRACKET", vim.trim(table.concat(content, "\n")))
         end)
       )
 
@@ -752,6 +842,54 @@ describe("diffview.vcs.adapters.jj", function()
           assert.is_true(seen_paths["a.txt"], "expected a.txt in history")
           assert.is_true(seen_paths["b.txt"], "expected b.txt in history")
           assert.is_nil(seen_paths["c.md"], "c.md should have been filtered out")
+        end)
+      )
+
+      it(
+        "builds history for a literal path containing fileset metacharacters",
+        helpers.async_test(function()
+          if not jj_available() then
+            pending("jj not installed")
+            return
+          end
+
+          -- A Svelte route group path embeds parentheses, which jj parses as
+          -- fileset operators. `:DiffviewFileHistory <path>` must quote the
+          -- path so `jj log`/`jj file list` match it literally instead of
+          -- failing with "Failed to parse fileset".
+          local path = "frontend/src/routes/(test)/View.svelte"
+          repo.write(path, "<svelte/>\n")
+          repo.jj({ "describe", "-m", "add svelte route group" })
+
+          local adapter = repo.adapter()
+          local AsyncListStream = require("diffview.stream").AsyncListStream
+          local JobStatus = require("diffview.vcs.utils").JobStatus
+
+          local stream = AsyncListStream()
+          adapter:file_history_worker(stream, {
+            log_opt = {
+              single_file = { path_args = { path }, revisions = "::@" },
+              multi_file = { path_args = { path }, revisions = "::@" },
+            },
+            layout_opt = { default_layout = Diff2, merge_layout = Diff2 },
+          })
+
+          local statuses = {}
+          local found = false
+          for _, item in stream:iter() do
+            local status, log_entry = unpack(item, 1, 2)
+            statuses[#statuses + 1] = status
+            if status == JobStatus.PROGRESS and log_entry then
+              for _, f in ipairs(log_entry.files) do
+                if f.path == path then
+                  found = true
+                end
+              end
+            end
+          end
+
+          assert.equals(JobStatus.SUCCESS, statuses[#statuses])
+          assert.is_true(found, "history dropped the parenthesised path")
         end)
       )
     end)
@@ -1089,12 +1227,21 @@ describe("diffview.vcs.adapters.jj", function()
       assert.is_false(is_non_literal_pathspec(""))
     end)
 
-    it("flags jj pathspec prefixes", function()
+    it("flags known jj fileset kind prefixes", function()
       assert.is_true(is_non_literal_pathspec("glob:*.lua"))
       assert.is_true(is_non_literal_pathspec("root:foo"))
       assert.is_true(is_non_literal_pathspec("cwd:foo"))
       assert.is_true(is_non_literal_pathspec("cwd-glob:**/*.lua"))
-      assert.is_true(is_non_literal_pathspec("file-list:paths.txt"))
+      assert.is_true(is_non_literal_pathspec("file:foo.txt"))
+      assert.is_true(is_non_literal_pathspec("root-file:foo.txt"))
+      assert.is_true(is_non_literal_pathspec("root-glob:**/*.lua"))
+      assert.is_true(is_non_literal_pathspec("prefix-glob:*.d"))
+    end)
+
+    it("flags the case-insensitive `-i` glob variants", function()
+      assert.is_true(is_non_literal_pathspec("glob-i:*.TXT"))
+      assert.is_true(is_non_literal_pathspec("cwd-glob-i:*.TXT"))
+      assert.is_true(is_non_literal_pathspec("root-glob-i:*.TXT"))
     end)
 
     it("flags shell glob metacharacters", function()
@@ -1108,11 +1255,66 @@ describe("diffview.vcs.adapters.jj", function()
       assert.is_false(is_non_literal_pathspec("D:\\bar.txt"))
     end)
 
+    it("keeps a literal filename with a colon literal", function()
+      -- A colon is legal in a Unix filename. Only jj's recognised kinds are
+      -- non-literal, so an unknown `<word>:` prefix (a real filename, or `jj
+      -- file-list:` which is not a fileset kind) must stay literal and get
+      -- quoted rather than parsed by jj as an invalid pattern kind.
+      assert.is_false(is_non_literal_pathspec("foo:bar.txt"))
+      assert.is_false(is_non_literal_pathspec("src/foo:bar.txt"))
+      assert.is_false(is_non_literal_pathspec("2024:01:01.log"))
+      assert.is_false(is_non_literal_pathspec("file-list:paths.txt"))
+    end)
+
     it("keeps bare relative and absolute paths literal", function()
       assert.is_false(is_non_literal_pathspec("foo.txt"))
       assert.is_false(is_non_literal_pathspec("src/foo.txt"))
       assert.is_false(is_non_literal_pathspec("/abs/foo.txt"))
       assert.is_false(is_non_literal_pathspec("./foo.txt"))
+    end)
+  end)
+
+  describe("quote_path_args", function()
+    local quote_path_args = require("diffview.vcs.adapters.jj")._test.quote_path_args
+
+    it("quotes a literal path so fileset metacharacters match literally", function()
+      eq(
+        { '"frontend/src/routes/(test)/View.svelte"' },
+        quote_path_args({
+          "frontend/src/routes/(test)/View.svelte",
+        })
+      )
+    end)
+
+    it("leaves non-literal pathspecs untouched so filesets keep working", function()
+      eq(
+        { "glob:*.lua", "root:foo", "*.lua" },
+        quote_path_args({
+          "glob:*.lua",
+          "root:foo",
+          "*.lua",
+        })
+      )
+    end)
+
+    it("quotes a literal filename containing a colon", function()
+      -- `foo:bar.txt` is a valid Unix filename, not a jj `<kind>:` pathspec, so
+      -- it must be quoted; left bare, jj would reject `foo:` as a pattern kind.
+      eq({ '"foo:bar.txt"' }, quote_path_args({ "foo:bar.txt" }))
+    end)
+
+    it("leaves the `.` and empty sentinels untouched", function()
+      eq({ ".", "" }, quote_path_args({ ".", "" }))
+    end)
+
+    it("quotes only the literal members of a mixed list", function()
+      eq(
+        { '"src/(a)/x.lua"', "glob:*.lua" },
+        quote_path_args({
+          "src/(a)/x.lua",
+          "glob:*.lua",
+        })
+      )
     end)
   end)
 end)

@@ -278,6 +278,18 @@ COMMANDS                                        *diffview-commands*
         and git pathspec is supported (see `:Man gitglossary(7)` for
         information about pathspec).
 
+        With the Jujutsu adapter, [paths] are jj filesets rather than git
+        pathspecs. A bare path is matched as a glob (jj's default `cwd`
+        pattern kind), so a literal filename that contains fileset
+        metacharacters can match the wrong file: `*`, `?`, `[`, and `]` act
+        as glob symbols, while `(`, `)`, `|`, `&`, and `~` are parser
+        operators. To match such a file literally, prefix it with the
+        exact-file kind `file:` (or use `glob:` to force an explicit glob).
+        If the literal name also contains a parser operator, wrap it in a jj
+        string literal using the opposite quote character, so that Vim's
+        command-line parser preserves the inner quotes (see the examples
+        below). See `jj help -k filesets` for the full fileset syntax.
+
         If [range] is given, the file history view will trace the line
         evolution of the given range in the current file (see the `-L` flag
         below). Not supported by the Jujutsu adapter.
@@ -314,6 +326,14 @@ COMMANDS                                        *diffview-commands*
 
             " History for multiple paths:
             :DiffviewFileHistory multiple/paths foo/bar baz/qux
+
+            " jj: a literal path containing glob-like route params:
+            :DiffviewFileHistory file:src/routes/[id]/page.svelte
+
+            " jj: a literal path with both a route group and a glob param;
+            " single-quote the arg so the jj string literal's double quotes
+            " survive Vim's command-line parser:
+            :DiffviewFileHistory 'file:"src/routes/(app)/[id]/page.svelte"'
 
             " Compare history against a fixed base:
             :DiffviewFileHistory --base=HEAD~4

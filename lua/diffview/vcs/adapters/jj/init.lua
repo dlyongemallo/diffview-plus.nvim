@@ -127,6 +127,113 @@ function JjAdapter:get_command()
   return config.get_config().jj_cmd
 end
 
+---Escape a path as a jj fileset string literal: double-quoted, with `\` and
+---`"` backslash-escaped to satisfy jj's string-literal grammar. Quoting stops
+---jj from reading the fileset parser's metacharacters (`(`, `)`, `|`, `&`,
+---`~`, whitespace) in a real path (e.g., a Svelte route group like `(group)`)
+---as operators. The returned string still carries jj's default `cwd` pattern
+---kind, which matches the path and its descendants and leaves glob symbols
+---(`*`, `?`, `[`, `]`) active; callers needing an exact single file must use
+---`fileset_exact` instead.
+---@param path string
+---@return string
+local function fileset_string(path)
+  return '"' .. path:gsub("\\", "\\\\"):gsub('"', '\\"') .. '"'
+end
+
+---Build an exact-file jj fileset pattern for `path`. The `file:` (a.k.a.
+---`cwd-file:`) kind matches exactly one file relative to cwd, with no prefix
+---or glob expansion, so a path containing parser metacharacters (`(`, `|`,
+---...) or glob symbols (`*`, `?`, `[`, `]`) resolves to that one file rather
+---than erroring or matching siblings. Used for single-file operations
+---(`show`, `restore`) where `path` is a concrete tracked file.
+---@param path string
+---@return string
+local function fileset_exact(path)
+  return "file:" .. fileset_string(path)
+end
+
+-- The fileset pattern kinds jj recognises before a `:` (see `jj help -k
+-- filesets`). A leading `<kind>:` marks an intentional fileset expression
+-- rather than a literal path. Glob kinds also accept a case-insensitive `-i`
+-- suffix, which is stripped before the lookup.
+local JJ_PATTERN_KINDS = {
+  cwd = true,
+  root = true,
+  file = true,
+  ["cwd-file"] = true,
+  ["root-file"] = true,
+  glob = true,
+  ["cwd-glob"] = true,
+  ["root-glob"] = true,
+  ["prefix-glob"] = true,
+  ["cwd-prefix-glob"] = true,
+  ["root-prefix-glob"] = true,
+}
+
+---Detect a non-literal jj pathspec: one carrying a known fileset kind prefix
+---(`glob:`, `root:`, `file:`, ...) or a bare glob (`*.lua`). The per-path
+---canonicalise in `compute_fh_scope_args` can't resolve either, and
+---`quote_path_args` hands them to jj untouched so intentional filesets keep
+---working. Only jj's recognised kinds count: an unknown `<word>:` prefix is
+---treated as literal, so a real filename that merely contains a colon (e.g.
+---`foo:bar.txt`, legal on Unix) gets quoted rather than parsed by jj as an
+---invalid pattern kind. A user-defined fileset alias (also `<word>:`) is
+---likewise treated as literal, which is the safe default for a path argument.
+---@param p string
+---@return boolean
+local function is_non_literal_pathspec(p)
+  if p == "." or p == "" then
+    return false
+  end
+  local kind = p:match("^([%w-]+):")
+  if kind then
+    -- Strip the optional case-insensitive `-i` suffix before the lookup.
+    local base_kind = kind:gsub("%-i$", "")
+    if JJ_PATTERN_KINDS[base_kind] then
+      return true
+    end
+  end
+  if p:match("[*?%[%]]") then
+    return true
+  end
+  return false
+end
+
+---Quote each literal path in `path_args` as a fileset string literal (see
+---`fileset_string`) so jj matches it verbatim. Non-literal pathspecs
+---(`glob:*.lua`, `root:foo`, bare globs) and the `.`/empty sentinels are left
+---untouched so intentional fileset expressions keep working. Applied at every
+---boundary where user-supplied or derived paths are handed to a jj command
+---after `--`, since jj parses those arguments as filesets. Uses
+---`fileset_string` (the default `cwd` kind) rather than `fileset_exact` so a
+---directory path keeps matching its descendants, preserving history scope.
+---@param path_args string[]
+---@return string[]
+local function quote_path_args(path_args)
+  return vim.tbl_map(function(p)
+    if p == "" or p == "." or is_non_literal_pathspec(p) then
+      return p
+    end
+    return fileset_string(p)
+  end, path_args) --[[@as string[] ]]
+end
+
+---List the files matching `path_args` at the working-copy revision (`@`). The
+---path args are quoted (see `quote_path_args`) so fileset metacharacters in a
+---literal path don't get parsed as operators. The scope helpers below use this
+---to count matches and to canonicalise a pathspec to its concrete
+---workspace-relative file(s).
+---@param path_args string[]
+---@return string[] # Workspace-relative paths, one per line
+function JjAdapter:list_files_at_head(path_args)
+  local out = self:exec_sync(
+    utils.vec_join("file", "list", "-r", "@", "--", quote_path_args(path_args)),
+    { cwd = self.ctx.toplevel, silent = true }
+  )
+  return out or {}
+end
+
 ---@param path string
 ---@param rev Rev?
 ---@return string[]
@@ -138,7 +245,7 @@ function JjAdapter:get_show_args(path, rev)
     "-r",
     rev and rev:object_name() or "@",
     "--",
-    path
+    fileset_exact(path)
   )
 end
 
@@ -467,11 +574,7 @@ function JjAdapter:is_single_file(path_args, lflags)
   if path_args and self.ctx.toplevel then
     return #path_args == 1
       and not pl:is_dir(path_args[1])
-      and #self:exec_sync(
-          utils.vec_join("file", "list", "-r", "@", "--", path_args),
-          { cwd = self.ctx.toplevel, silent = true }
-        )
-        < 2
+      and #self:list_files_at_head(path_args) < 2
   end
   return true
 end
@@ -495,10 +598,7 @@ function JjAdapter:history_scope(path_args, log_options) ---@diagnostic disable-
   -- no `--follow` and callers consume `scope.path` as a literal post-filter
   -- against `f.target().path()`. Returning a non-canonical `path_args[1]`
   -- (`./foo.txt`, `glob:*`, ...) there would empty otherwise-valid history.
-  local out = self:exec_sync(
-    utils.vec_join("file", "list", "-r", "@", "--", path_args),
-    { cwd = self.ctx.toplevel, silent = true }
-  )
+  local out = self:list_files_at_head(path_args)
   if #out == 1 then
     return { single_file = true, path = out[1] }
   end
@@ -510,26 +610,6 @@ function JjAdapter:history_scope(path_args, log_options) ---@diagnostic disable-
     return { single_file = true }
   end
   return { single_file = false }
-end
-
----Detect a non-literal jj pathspec. jj recognises prefixes such as `glob:`,
----`root:`, `cwd:`, `cwd-glob:`, and `file-list:`; the per-path canonicalise
----in `compute_fh_scope_args` can't resolve any of these. Glob metacharacters
----outside a prefix (`*.lua`) are also non-literal. Requires at least two
----characters before `:` so Windows drive letters (`C:/...`) stay literal.
----@param p string
----@return boolean
-local function is_non_literal_pathspec(p)
-  if p == "." or p == "" then
-    return false
-  end
-  if p:match("^[%w_-][%w_-]+:") then
-    return true
-  end
-  if p:match("[*?%[%]]") then
-    return true
-  end
-  return false
 end
 
 ---Resolve `path_args` to workspace-relative paths used by `parse_fh_data`'s
@@ -551,10 +631,7 @@ function JjAdapter:compute_fh_scope_args(path_args)
   local toplevel = self.ctx.toplevel
   for _, p in ipairs(path_args) do
     if is_non_literal_pathspec(p) then
-      local out = self:exec_sync(
-        utils.vec_join("file", "list", "-r", "@", "--", path_args),
-        { cwd = toplevel, silent = true }
-      )
+      local out = self:list_files_at_head(path_args)
       return #out > 0 and out or {}
     end
   end
@@ -676,7 +753,7 @@ function JjAdapter:file_history_dry_run(log_opt)
     log_options.revisions and { "-r", log_options.revisions } or nil,
     options,
     "--",
-    log_options.path_args
+    quote_path_args(log_options.path_args)
   )
 
   local out, code = self:exec_sync(cmd, {
@@ -858,7 +935,7 @@ function JjAdapter:stream_fh_data(state)
       prepared.revisions and { "-r", prepared.revisions } or nil,
       prepared.flags,
       "--",
-      prepared.path_args
+      quote_path_args(prepared.path_args)
     ),
     cwd = self.ctx.toplevel,
     log_opt = { label = "JjAdapter:stream_fh_data()" },
@@ -1242,7 +1319,7 @@ JjAdapter.file_restore = async.wrap(function(self, path, kind, commit, callback)
   local from = commit or "@-"
   local abs_path = pl:join(self.ctx.toplevel, path)
   local _, code, stderr = self:exec_sync(
-    { "restore", "--from", from, "--", path },
+    { "restore", "--from", from, "--", fileset_exact(path) },
     { cwd = self.ctx.toplevel }
   )
 
@@ -1378,5 +1455,6 @@ M._test = {
   structure_fh_data = structure_fh_data,
   FH_TEMPLATE = FH_TEMPLATE,
   is_non_literal_pathspec = is_non_literal_pathspec,
+  quote_path_args = quote_path_args,
 }
 return M
