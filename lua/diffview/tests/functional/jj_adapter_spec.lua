@@ -892,6 +892,122 @@ describe("diffview.vcs.adapters.jj", function()
           assert.is_true(found, "history dropped the parenthesised path")
         end)
       )
+
+      it(
+        "tracks the literal glob-character file, not its glob sibling",
+        helpers.async_test(function()
+          if not jj_available() then
+            pending("jj not installed")
+            return
+          end
+
+          -- `a[1].txt` would glob-match `a1.txt` under jj's default kind. With
+          -- the on-disk path resolved to the literal `cwd:` kind, history must
+          -- follow only `a[1].txt` and never the sibling `a1.txt`.
+          repo.write("a1.txt", "sibling\n")
+          repo.jj({ "describe", "-m", "add a1" })
+          repo.jj({ "new" })
+          repo.write("a[1].txt", "bracket\n")
+          repo.jj({ "describe", "-m", "add bracket" })
+
+          local adapter = repo.adapter()
+          local AsyncListStream = require("diffview.stream").AsyncListStream
+          local JobStatus = require("diffview.vcs.utils").JobStatus
+
+          local stream = AsyncListStream()
+          adapter:file_history_worker(stream, {
+            log_opt = {
+              single_file = { path_args = { "a[1].txt" }, revisions = "::@" },
+              multi_file = { path_args = { "a[1].txt" }, revisions = "::@" },
+            },
+            layout_opt = { default_layout = Diff2, merge_layout = Diff2 },
+          })
+
+          local seen_paths = {}
+          for _, item in stream:iter() do
+            local status, log_entry = unpack(item, 1, 2)
+            if status == JobStatus.PROGRESS and log_entry then
+              for _, f in ipairs(log_entry.files) do
+                seen_paths[f.path] = true
+              end
+            end
+          end
+
+          assert.is_true(seen_paths["a[1].txt"], "expected the literal a[1].txt in history")
+          assert.is_nil(seen_paths["a1.txt"], "glob sibling a1.txt must not appear")
+        end)
+      )
+    end)
+
+    describe("file_history_dry_run", function()
+      it(
+        "returns a `file:` hint when a literal path can't parse as a fileset",
+        helpers.async_test(function()
+          if not jj_available() then
+            pending("jj not installed")
+            return
+          end
+
+          -- `(app)` is a fileset operator and `[id]` keeps the path unquoted, so
+          -- jj fails to parse it. The path does not exist on disk, so it cannot
+          -- be resolved literally; the dry run should surface an actionable hint
+          -- rather than the misleading "no history" message.
+          repo.write("readme.md", "x\n")
+          repo.jj({ "describe", "-m", "init" })
+
+          local adapter = repo.adapter()
+          local ok, _, err =
+            adapter:file_history_dry_run({ path_args = { "src/routes/(app)/[id]/page.svelte" } })
+
+          assert.is_false(ok)
+          assert.is_not_nil(err)
+          assert.is_truthy(err:find("file:", 1, true), "hint should mention the file: prefix")
+        end)
+      )
+
+      it(
+        "does not add the hint for a plain path with genuinely no history",
+        helpers.async_test(function()
+          if not jj_available() then
+            pending("jj not installed")
+            return
+          end
+
+          repo.write("present.txt", "x\n")
+          repo.jj({ "describe", "-m", "add present" })
+
+          local adapter = repo.adapter()
+          -- A well-formed path that simply isn't tracked: empty history, but not
+          -- a parse error, so no `file:` hint.
+          local ok, _, err = adapter:file_history_dry_run({ path_args = { "absent.txt" } })
+
+          assert.is_false(ok)
+          assert.is_nil(err)
+        end)
+      )
+
+      it(
+        "succeeds for an existing path that mixes glob and operator characters",
+        helpers.async_test(function()
+          if not jj_available() then
+            pending("jj not installed")
+            return
+          end
+
+          -- The bare path would fail fileset parsing, but because it exists on
+          -- disk it resolves to the literal `cwd:` kind, so the dry run finds
+          -- history with no parse error and no `file:` hint.
+          local path = "src/routes/(app)/[id]/page.svelte"
+          repo.write(path, "<svelte/>\n")
+          repo.jj({ "describe", "-m", "add route" })
+
+          local adapter = repo.adapter()
+          local ok, _, err = adapter:file_history_dry_run({ path_args = { path } })
+
+          assert.is_true(ok)
+          assert.is_nil(err)
+        end)
+      )
     end)
 
     describe("file_restore", function()
@@ -1315,6 +1431,67 @@ describe("diffview.vcs.adapters.jj", function()
           "glob:*.lua",
         })
       )
+    end)
+
+    it("matches a glob-character path literally when it exists on disk", function()
+      local top = vim.fn.tempname()
+      vim.fn.mkdir(top .. "/src/routes/(app)/[id]", "p")
+      local f = assert(io.open(top .. "/src/routes/(app)/[id]/page.svelte", "w"))
+      f:write("x")
+      f:close()
+      local g = assert(io.open(top .. "/a[1].txt", "w"))
+      g:write("x")
+      g:close()
+
+      -- Existing paths with glob metacharacters resolve to the non-globbing
+      -- `cwd:` kind so jj matches them literally instead of as a glob.
+      eq({ 'cwd:"a[1].txt"' }, quote_path_args({ "a[1].txt" }, top))
+      eq(
+        { 'cwd:"src/routes/(app)/[id]/page.svelte"' },
+        quote_path_args({ "src/routes/(app)/[id]/page.svelte" }, top)
+      )
+
+      vim.fn.delete(top, "rf")
+    end)
+
+    it("leaves a glob as a glob when no file matches it on disk", function()
+      local top = vim.fn.tempname()
+      vim.fn.mkdir(top, "p")
+
+      -- An intentional glob, and a glob-character path that names nothing on
+      -- disk, are both left bare for jj to expand.
+      eq({ "*.lua" }, quote_path_args({ "*.lua" }, top))
+      eq({ "missing[1].txt" }, quote_path_args({ "missing[1].txt" }, top))
+
+      vim.fn.delete(top, "rf")
+    end)
+  end)
+
+  describe("is_ambiguous_literal_path", function()
+    local is_ambiguous_literal_path =
+      require("diffview.vcs.adapters.jj")._test.is_ambiguous_literal_path
+
+    it("flags an unquoted glob-char path that also has a fileset operator", function()
+      -- A SvelteKit route: `[id]` keeps it unquoted, `(app)` then breaks jj's
+      -- fileset parser. This is the shape that needs an explicit `file:`.
+      assert.is_true(is_ambiguous_literal_path("src/routes/(app)/[id]/page.svelte"))
+      assert.is_true(is_ambiguous_literal_path("a b[1].txt"))
+    end)
+
+    it("does not flag a glob-char path with no fileset operator", function()
+      -- `a[1].txt` is left unquoted but parses (it just globs a sibling); it is
+      -- not a hard parse error, so it is out of scope here.
+      assert.is_false(is_ambiguous_literal_path("a[1].txt"))
+      assert.is_false(is_ambiguous_literal_path("*.lua"))
+    end)
+
+    it("does not flag an operator-only path (it is auto-quoted)", function()
+      assert.is_false(is_ambiguous_literal_path("(app)/page.svelte"))
+      assert.is_false(is_ambiguous_literal_path("src/foo.txt"))
+    end)
+
+    it("does not flag an explicit fileset kind prefix", function()
+      assert.is_false(is_ambiguous_literal_path("glob:(app)/*.svelte"))
     end)
   end)
 end)

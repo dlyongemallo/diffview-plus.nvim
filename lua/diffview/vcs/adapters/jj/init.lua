@@ -153,6 +153,29 @@ local function fileset_exact(path)
   return "file:" .. fileset_string(path)
 end
 
+---Build a literal `cwd:` jj fileset pattern for `path`. Like the default
+---pattern kind, `cwd:` matches the path and its descendants, but it does not
+---treat glob symbols (`*`, `?`, `[`, `]`) as wildcards, so a real file or
+---directory whose name contains them (e.g. a SvelteKit route `[id]`) resolves
+---to itself rather than globbing a sibling. Used for a file-history path
+---argument that names an existing path on disk.
+---@param path string
+---@return string
+local function fileset_cwd(path)
+  return "cwd:" .. fileset_string(path)
+end
+
+-- jj's glob metacharacters (`*`, `?`, `[`, `]`). Their presence in a bare path
+-- marks it as a potential glob rather than a plain literal.
+local GLOB_METACHARS = "[*?%[%]]"
+
+---Whether `p` contains a jj glob metacharacter (`*`, `?`, `[`, `]`).
+---@param p string
+---@return boolean
+local function has_glob_metachar(p)
+  return p:match(GLOB_METACHARS) ~= nil
+end
+
 -- The fileset pattern kinds jj recognises before a `:` (see `jj help -k
 -- filesets`). A leading `<kind>:` marks an intentional fileset expression
 -- rather than a literal path. Glob kinds also accept a case-insensitive `-i`
@@ -171,6 +194,22 @@ local JJ_PATTERN_KINDS = {
   ["root-prefix-glob"] = true,
 }
 
+---The jj fileset kind named by `p`'s `<kind>:` prefix, or nil when `p` has no
+---recognised kind prefix. Only jj's real kinds count, so an unknown `<word>:`
+---(a literal filename with a colon, or a user-defined fileset alias) returns
+---nil.
+---@param p string
+---@return string?
+local function fileset_kind_prefix(p)
+  local kind = p:match("^([%w-]+):")
+  if not kind then
+    return nil
+  end
+  -- Strip the optional case-insensitive `-i` suffix before the lookup.
+  local base_kind = kind:gsub("%-i$", "")
+  return JJ_PATTERN_KINDS[base_kind] and kind or nil
+end
+
 ---Detect a non-literal jj pathspec: one carrying a known fileset kind prefix
 ---(`glob:`, `root:`, `file:`, ...) or a bare glob (`*.lua`). The per-path
 ---canonicalise in `compute_fh_scope_args` can't resolve either, and
@@ -186,33 +225,72 @@ local function is_non_literal_pathspec(p)
   if p == "." or p == "" then
     return false
   end
-  local kind = p:match("^([%w-]+):")
-  if kind then
-    -- Strip the optional case-insensitive `-i` suffix before the lookup.
-    local base_kind = kind:gsub("%-i$", "")
-    if JJ_PATTERN_KINDS[base_kind] then
-      return true
-    end
+  if fileset_kind_prefix(p) then
+    return true
   end
-  if p:match("[*?%[%]]") then
+  if has_glob_metachar(p) then
     return true
   end
   return false
 end
 
+-- jj fileset parser operators (`(`, `)`, `|`, `&`, `~`) and whitespace, which
+-- make a bare, unquoted path fail to parse as a fileset expression.
+local FILESET_OPERATORS = "[()|&~%s]"
+
+---True when diffview would hand `p` to jj as a bare fileset -- it carries a glob
+---metacharacter (`*`, `?`, `[`, `]`) but no explicit kind prefix, so
+---`quote_path_args` leaves it unquoted -- yet it also contains a fileset
+---operator that jj rejects. Such an argument is almost always a literal
+---filename (e.g. the SvelteKit route `src/routes/(app)/[id]/page.svelte`) that
+---needs an explicit `file:` pattern. Used only to phrase a clearer error once
+---jj has actually reported a fileset parse failure, so a valid bare fileset
+---such as `(*.lua | *.md)` -- which matches this shape but parses fine -- is
+---never wrongly flagged.
+---@param p string
+---@return boolean
+local function is_ambiguous_literal_path(p)
+  if fileset_kind_prefix(p) then
+    return false
+  end
+  return has_glob_metachar(p) and p:match(FILESET_OPERATORS) ~= nil
+end
+
+---Whether `p` resolves to an existing file or directory. A relative `p` is
+---resolved against `toplevel`, the workspace root jj runs the history commands
+---in, so the probe predicts how jj itself will resolve the path.
+---@param p string
+---@param toplevel string
+---@return boolean
+local function path_exists(p, toplevel)
+  return uv.fs_stat(pl:absolute(p, toplevel)) ~= nil
+end
+
 ---Quote each literal path in `path_args` as a fileset string literal (see
 ---`fileset_string`) so jj matches it verbatim. Non-literal pathspecs
----(`glob:*.lua`, `root:foo`, bare globs) and the `.`/empty sentinels are left
----untouched so intentional fileset expressions keep working. Applied at every
----boundary where user-supplied or derived paths are handed to a jj command
----after `--`, since jj parses those arguments as filesets. Uses
----`fileset_string` (the default `cwd` kind) rather than `fileset_exact` so a
----directory path keeps matching its descendants, preserving history scope.
+---(`glob:*.lua`, `root:foo`) and the `.`/empty sentinels are left untouched so
+---intentional fileset expressions keep working. Applied at every boundary
+---where user-supplied or derived paths are handed to a jj command after `--`,
+---since jj parses those arguments as filesets.
+---
+---A glob metacharacter (`*`, `?`, `[`, `]`) usually marks an intentional glob,
+---but it is also legal in a real filename (e.g. a SvelteKit route
+---`(app)/[id]`). When `toplevel` is given and the path names something on disk,
+---it is matched literally with the non-globbing `cwd:` kind; otherwise it is
+---left as a glob. Without `toplevel` (callers that can't probe the filesystem),
+---a glob-character path stays a glob.
 ---@param path_args string[]
+---@param toplevel? string
 ---@return string[]
-local function quote_path_args(path_args)
+local function quote_path_args(path_args, toplevel)
   return vim.tbl_map(function(p)
-    if p == "" or p == "." or is_non_literal_pathspec(p) then
+    if p == "" or p == "." or fileset_kind_prefix(p) then
+      return p
+    end
+    if has_glob_metachar(p) then
+      if toplevel and path_exists(p, toplevel) then
+        return fileset_cwd(p)
+      end
       return p
     end
     return fileset_string(p)
@@ -228,7 +306,7 @@ end
 ---@return string[] # Workspace-relative paths, one per line
 function JjAdapter:list_files_at_head(path_args)
   local out = self:exec_sync(
-    utils.vec_join("file", "list", "-r", "@", "--", quote_path_args(path_args)),
+    utils.vec_join("file", "list", "-r", "@", "--", quote_path_args(path_args, self.ctx.toplevel)),
     { cwd = self.ctx.toplevel, silent = true }
   )
   return out or {}
@@ -676,9 +754,14 @@ function JjAdapter:file_history_options(range, paths, argo)
 
   log_options.path_args = paths
 
-  local ok, opt_description = self:file_history_dry_run(log_options)
+  local ok, opt_description, parse_err = self:file_history_dry_run(log_options)
 
   if not ok then
+    if parse_err then
+      utils.err(parse_err)
+      return
+    end
+
     local msg = "No jj history for the target(s) given the current options! Targets: %s\n"
       .. "Current options: [ %s ]"
 
@@ -724,7 +807,8 @@ function JjAdapter:prepare_fh_options(log_options, single_file) ---@diagnostic d
 end
 
 ---@param log_opt JjLogOptions
----@return boolean ok, string description
+---@return boolean ok, string description, string? err # Actionable error when a
+---path argument is not valid fileset syntax (as opposed to an empty history).
 function JjAdapter:file_history_dry_run(log_opt)
   local single_file = self:is_single_file(log_opt.path_args)
   local log_options = config.get_log_options(single_file, log_opt, self.config_key) --[[@as JjLogOptions ]]
@@ -753,20 +837,45 @@ function JjAdapter:file_history_dry_run(log_opt)
     log_options.revisions and { "-r", log_options.revisions } or nil,
     options,
     "--",
-    quote_path_args(log_options.path_args)
+    quote_path_args(log_options.path_args, self.ctx.toplevel)
   )
 
-  local out, code = self:exec_sync(cmd, {
+  local out, code, stderr = self:exec_sync(cmd, {
     cwd = self.ctx.toplevel,
     log_opt = { label = "JjAdapter:file_history_dry_run()" },
   })
 
-  local ok = code == 0 and #out > 0
-  if not ok then
-    logger:fmt_debug("[JjAdapter:file_history_dry_run] Dry run failed.")
+  if code == 0 and #out > 0 then
+    return true, table.concat(description, ", ")
   end
 
-  return ok, table.concat(description, ", ")
+  logger:fmt_debug("[JjAdapter:file_history_dry_run] Dry run failed.")
+
+  -- A fileset parse failure (as opposed to an empty history) means a path
+  -- argument was not valid fileset syntax. When it looks like a literal path
+  -- that merely contains fileset metacharacters, point the user at the `file:`
+  -- pattern instead of the misleading "no history" message.
+  if
+    code ~= 0
+    and stderr
+    and table.concat(stderr, "\n"):find("Failed to parse fileset", 1, true)
+  then
+    for _, p in ipairs(log_options.path_args) do
+      if is_ambiguous_literal_path(p) then
+        return false,
+          table.concat(description, ", "),
+          fmt(
+            "Could not parse %s as a jj fileset. If this is a literal path, "
+              .. "prefix it with `file:` to match it literally; see "
+              .. "`:h :DiffviewFileHistory` for quoting paths that contain "
+              .. "`(`, `)`, or spaces.",
+            utils.str_quote(p)
+          )
+      end
+    end
+  end
+
+  return false, table.concat(description, ", ")
 end
 
 ---Template fed to `jj log -T ...` by the file-history worker.
@@ -935,7 +1044,7 @@ function JjAdapter:stream_fh_data(state)
       prepared.revisions and { "-r", prepared.revisions } or nil,
       prepared.flags,
       "--",
-      quote_path_args(prepared.path_args)
+      quote_path_args(prepared.path_args, self.ctx.toplevel)
     ),
     cwd = self.ctx.toplevel,
     log_opt = { label = "JjAdapter:stream_fh_data()" },
@@ -1455,6 +1564,7 @@ M._test = {
   structure_fh_data = structure_fh_data,
   FH_TEMPLATE = FH_TEMPLATE,
   is_non_literal_pathspec = is_non_literal_pathspec,
+  is_ambiguous_literal_path = is_ambiguous_literal_path,
   quote_path_args = quote_path_args,
 }
 return M
