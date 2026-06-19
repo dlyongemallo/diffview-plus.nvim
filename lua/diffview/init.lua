@@ -46,9 +46,13 @@ function M.init()
     end,
   })
   -- Throttle `FocusGained` so bursts of focus events can't drive
-  -- `refresh_files` faster than it can complete.
+  -- `refresh_files` faster than it can complete. The `focus_gained` flag lets
+  -- views opt out: the diff view refreshes (the working tree may have changed while
+  -- Neovim was in the background), while the file-history view ignores it
+  -- (rebuilding the whole log on every focus is costly and rarely reflects a
+  -- real change in commit history).
   local refresh_files_throttled = debounce.throttle_trailing(500, true, function()
-    M.emit("refresh_files")
+    M.emit("refresh_files", { focus_gained = true })
   end)
   au("FocusGained", {
     group = M.augroup,

@@ -1066,6 +1066,7 @@ end
 
 ---@class DiffviewRefreshFilesOpts
 ---@field force? boolean Force-reload stage diff buffers, discarding unsaved edits.
+---@field focus_gained? boolean Set when the refresh was triggered by `FocusGained`. The file-history view ignores these (rebuilding the whole log on every focus is costly and rarely reflects a real change); the diff view still refreshes.
 
 ---Refresh the file list for the current view.
 ---

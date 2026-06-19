@@ -272,7 +272,14 @@ return function(view)
     toggle_files = function()
       view.panel:toggle(true)
     end,
-    refresh_files = function()
+    refresh_files = function(_, opts)
+      -- Ignore `FocusGained`-triggered refreshes: re-streaming the whole log
+      -- and rebuilding every entry on each focus is costly and rarely reflects
+      -- a real change in commit history. Explicit refreshes (the `R` keymap)
+      -- and `FugitiveChanged` still update the history.
+      if opts and opts.focus_gained then
+        return
+      end
       view.panel:update_entries(function(_, status)
         if status >= JobStatus.ERROR then
           return
