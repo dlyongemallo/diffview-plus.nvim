@@ -592,3 +592,239 @@ describe("file_history_render", function()
     end)
   end)
 end)
+
+-- =========================================================================
+-- State preservation across refresh (_snapshot_state / _restore_state)
+-- =========================================================================
+
+---Create a stub file entry identified by path (and optional oldpath).
+---@param path string
+---@param oldpath? string
+---@return table
+local function fh_file(path, oldpath)
+  return { path = path, oldpath = oldpath }
+end
+
+---Create a stub log entry with a commit hash, fold state, and files.
+---@param hash string?
+---@param folded boolean
+---@param files table[]
+---@return table
+local function fh_entry(hash, folded, files)
+  return { commit = { hash = hash }, folded = folded, files = files }
+end
+
+---Build a minimal FileHistoryPanel-shaped table with the state helpers bound.
+---@param entries table[]
+---@param opts? { single_file?: boolean, pin_local?: boolean, cur_item?: table }
+---@return table
+local function state_panel(entries, opts)
+  opts = opts or {}
+
+  local FileHistoryPanel =
+    require("diffview.scene.views.file_history.file_history_panel").FileHistoryPanel
+
+  local panel = {
+    entries = entries,
+    single_file = opts.single_file or false,
+    parent = { pin_local = opts.pin_local or false },
+    cur_item = opts.cur_item or {},
+  }
+
+  panel._snapshot_state = FileHistoryPanel._snapshot_state
+  panel._restore_state = FileHistoryPanel._restore_state
+  panel.set_cur_item = function(self, new_item)
+    self.cur_item = new_item
+  end
+
+  return panel
+end
+
+describe("file_history state preservation", function()
+  describe("_snapshot_state", function()
+    it("records unfolded entries by commit hash and the focused file", function()
+      local f1 = fh_file("a.txt")
+      local panel = state_panel({
+        fh_entry("aaa", false, { f1 }),
+        fh_entry("bbb", true, { fh_file("b.txt") }),
+      })
+      panel.cur_item = { panel.entries[1], f1 }
+
+      local snap = panel:_snapshot_state()
+
+      eq(true, snap.unfolded["aaa"])
+      eq(nil, snap.unfolded["bbb"])
+      eq("aaa", snap.cur.hash)
+      eq("a.txt", snap.cur.path)
+    end)
+
+    it("excludes the synthetic working-tree entry (nil hash)", function()
+      local panel = state_panel({ fh_entry(nil, false, { fh_file("x.txt") }) })
+      local snap = panel:_snapshot_state()
+      eq(nil, next(snap.unfolded))
+    end)
+
+    it("leaves cur nil when nothing is focused", function()
+      local panel = state_panel({ fh_entry("aaa", true, { fh_file("a.txt") }) })
+      eq(nil, panel:_snapshot_state().cur)
+    end)
+  end)
+
+  describe("_restore_state", function()
+    it("re-opens previously unfolded entries and folds the rest", function()
+      -- Rebuilt entries default to folded.
+      local r1 = fh_entry("aaa", true, { fh_file("a.txt") })
+      local r2 = fh_entry("bbb", true, { fh_file("b.txt") })
+      local panel = state_panel({ r1, r2 })
+
+      panel:_restore_state({ unfolded = { aaa = true }, cur = nil })
+
+      eq(false, r1.folded)
+      eq(true, r2.folded)
+    end)
+
+    it("restores the cursor to the matching file by hash and path", function()
+      local f = fh_file("b.txt")
+      local r2 = fh_entry("bbb", true, { f })
+      local panel = state_panel({ fh_entry("aaa", true, { fh_file("a.txt") }), r2 })
+
+      local restored = panel:_restore_state({
+        unfolded = { bbb = true },
+        cur = { hash = "bbb", path = "b.txt" },
+      })
+
+      eq(f, restored)
+      eq(r2, panel.cur_item[1])
+      eq(f, panel.cur_item[2])
+    end)
+
+    it("matches on path even when oldpath differs (rename re-detection)", function()
+      -- The snapshot only records path; a row whose rename status changed
+      -- across the refresh (oldpath set vs nil) must still match on path.
+      local renamed = fh_file("new.txt", "old.txt")
+      local panel = state_panel({ fh_entry("aaa", true, { renamed }) })
+
+      local restored = panel:_restore_state({
+        unfolded = {},
+        cur = { hash = "aaa", path = "new.txt" },
+      })
+
+      eq(renamed, restored)
+    end)
+
+    it("falls back to the commit's first file when the focused file is gone", function()
+      local first = fh_file("a.txt")
+      local panel = state_panel({ fh_entry("aaa", true, { first, fh_file("b.txt") }) })
+
+      local restored = panel:_restore_state({
+        unfolded = {},
+        cur = { hash = "aaa", path = "gone.txt" },
+      })
+
+      eq(first, restored)
+    end)
+
+    it("falls back to the first entry when the focused commit no longer exists", function()
+      -- The cursor must be re-established (not left nil), otherwise the caller
+      -- skips set_file and the cursor is stranded on a re-folded entry.
+      local first = fh_file("a.txt")
+      local panel = state_panel({
+        fh_entry("aaa", true, { first }),
+        fh_entry("bbb", true, { fh_file("b.txt") }),
+      })
+
+      local restored = panel:_restore_state({
+        unfolded = {},
+        cur = { hash = "zzz", path = "z.txt" },
+      })
+
+      eq(first, restored)
+      eq(first, panel.cur_item[2])
+    end)
+
+    it("returns nil on an empty snapshot, leaving the bootstrap's first-open state", function()
+      -- First open: the bootstrap already handled focus/load, so _restore_state
+      -- does nothing and reports no file to reload.
+      local first = fh_file("a.txt")
+      local r1 = fh_entry("aaa", true, { first })
+      local panel = state_panel({ r1 })
+
+      local restored = panel:_restore_state({ unfolded = {}, cur = nil })
+
+      eq(nil, restored)
+      eq(true, r1.folded)
+      eq(nil, panel.cur_item[1])
+    end)
+
+    it("returns nil for an empty history", function()
+      -- Non-empty snapshot so the empty-history fallback runs, not the early return.
+      local panel = state_panel({})
+      eq(nil, panel:_restore_state({ unfolded = {}, cur = { hash = "aaa", path = "a.txt" } }))
+    end)
+
+    it("leaves fold and cursor state untouched in pin_local mode", function()
+      -- pin_local owns its own restoration via the bootstrap, so _restore_state
+      -- is a no-op there.
+      local r1 = fh_entry("aaa", true, { fh_file("a.txt") })
+      local panel = state_panel({ r1, fh_entry("bbb", true, { fh_file("b.txt") }) }, {
+        pin_local = true,
+      })
+      local sentinel = { "untouched" }
+      panel.cur_item = sentinel
+
+      local restored = panel:_restore_state({
+        unfolded = { aaa = true },
+        cur = { hash = "bbb", path = "b.txt" },
+      })
+
+      eq(nil, restored)
+      eq(true, r1.folded)
+      eq(sentinel, panel.cur_item)
+    end)
+
+    it("restores the cursor in single_file mode without altering folds", function()
+      local f = fh_file("a.txt")
+      local r1 = fh_entry("aaa", true, { f })
+      local panel = state_panel({ r1 }, { single_file = true })
+
+      local restored = panel:_restore_state({
+        unfolded = { aaa = true },
+        cur = { hash = "aaa", path = "a.txt" },
+      })
+
+      eq(f, restored)
+      -- The fold loop is skipped in single_file mode.
+      eq(true, r1.folded)
+    end)
+  end)
+
+  it("preserves fold and cursor across a snapshot/rebuild cycle", function()
+    -- State before the refresh: commit "bbb" expanded, cursor on its 2nd file.
+    local before = {
+      fh_entry("aaa", true, { fh_file("a.txt") }),
+      fh_entry("bbb", false, { fh_file("b.txt"), fh_file("c.txt") }),
+      fh_entry("ccc", true, { fh_file("d.txt") }),
+    }
+    local panel = state_panel(before, { cur_item = { before[2], before[2].files[2] } })
+
+    local snap = panel:_snapshot_state()
+
+    -- The rebuild creates brand-new objects with the same hashes and paths,
+    -- all folded by default, and clears cur_item (as `update_entries` does).
+    local after = {
+      fh_entry("aaa", true, { fh_file("a.txt") }),
+      fh_entry("bbb", true, { fh_file("b.txt"), fh_file("c.txt") }),
+      fh_entry("ccc", true, { fh_file("d.txt") }),
+    }
+    panel.entries = after
+    panel.cur_item = {}
+
+    local restored = panel:_restore_state(snap)
+
+    eq(true, after[1].folded)
+    eq(false, after[2].folded)
+    eq(true, after[3].folded)
+    eq(after[2].files[2], restored)
+    eq("c.txt", panel.cur_item[2].path)
+  end)
+end)

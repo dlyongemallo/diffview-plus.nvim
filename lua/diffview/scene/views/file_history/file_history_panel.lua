@@ -194,11 +194,112 @@ function FileHistoryPanel:update_components()
   self.constrain_cursor = renderer.create_cursor_constraint({ self.components.log.entries.comp })
 end
 
+---@class FileHistoryPanel.StateSnapshot
+---@field unfolded table<string, boolean> Set of unfolded entries, keyed by commit hash.
+---@field cur? { hash: string, path: string } The focused file, identified by commit and path.
+
+---Snapshot the fold and cursor state so it can be restored after a rebuild.
+---Keyed by commit hash, so the synthetic working-tree entry (`nil` hash) is
+---excluded; `cur` stays nil when nothing is focused.
+---@return FileHistoryPanel.StateSnapshot
+function FileHistoryPanel:_snapshot_state()
+  local unfolded = {}
+
+  for _, entry in ipairs(self.entries) do
+    if not entry.folded and entry.commit and entry.commit.hash then
+      unfolded[entry.commit.hash] = true
+    end
+  end
+
+  local cur
+  local cur_entry, cur_file = self.cur_item[1], self.cur_item[2]
+
+  if cur_entry and cur_file and cur_entry.commit and cur_entry.commit.hash then
+    cur = { hash = cur_entry.commit.hash, path = cur_file.path }
+  end
+
+  return { unfolded = unfolded, cur = cur }
+end
+
+---Re-apply the snapshotted fold state to the rebuilt entries and return the
+---`FileEntry` to re-focus (the caller reloads its diff via `set_file`). Entries
+---absent from the snapshot are left folded (the default for a fresh entry).
+---
+---Returns nil on an empty snapshot (first open): the streaming bootstrap has
+---already focused, unfolded, and loaded the first entry, so re-folding and
+---reloading it would just flash the diff. Otherwise a file is always returned
+---(the previous file, else its commit's first file, else the first entry's
+---first file); the bootstrap is skipped when there's state to restore, so this
+---is the only thing that re-establishes the cursor and loads its diff.
+---
+---`pin_local` mode is left untouched: the bootstrap in `set_file_by_offset`
+---already re-targets the pinned file there, and a pinned commit's focused file
+---may be a transient overlay that isn't in `entry.files`.
+---@param prev_state FileHistoryPanel.StateSnapshot
+---@return FileEntry?
+function FileHistoryPanel:_restore_state(prev_state)
+  if self.parent.pin_local then
+    return
+  end
+
+  -- First open: nothing to restore; keep the streaming bootstrap's result.
+  if not prev_state.cur and next(prev_state.unfolded) == nil then
+    return
+  end
+
+  if not self.single_file then
+    for _, entry in ipairs(self.entries) do
+      local hash = entry.commit and entry.commit.hash
+      entry.folded = not (hash and prev_state.unfolded[hash])
+    end
+  end
+
+  -- Set the cursor to `file` and return it for the caller to re-focus.
+  local function focus(entry, file)
+    self:set_cur_item({ entry, file })
+    return file
+  end
+
+  local cur = prev_state.cur
+
+  if cur then
+    for _, entry in ipairs(self.entries) do
+      if entry.commit and entry.commit.hash == cur.hash then
+        -- Match on path alone: paths are unique within a commit, and rename
+        -- detection (`oldpath`) can resolve differently across a refresh,
+        -- which would spuriously drop the match.
+        for _, file in ipairs(entry.files) do
+          if file.path == cur.path then
+            return focus(entry, file)
+          end
+        end
+
+        -- File gone but commit survived: fall back to its first file.
+        if entry.files[1] then
+          return focus(entry, entry.files[1])
+        end
+      end
+    end
+  end
+
+  -- Focused commit gone (or never set): fall back to the first entry so the
+  -- cursor stays consistent with the re-applied folds.
+  local first = self.entries[1]
+  if first and first.files[1] then
+    return focus(first, first.files[1])
+  end
+end
+
 ---@param self FileHistoryPanel
 ---@param callback function
 FileHistoryPanel.update_entries = async.wrap(function(self, callback)
   perf_update:reset()
   local checkout = self.work_pool:check_in()
+
+  -- Snapshot fold/cursor state before the rebuild so a refresh that doesn't
+  -- change the history (`R`, `FugitiveChanged`) keeps the user's expanded
+  -- entries and cursor instead of collapsing and snapping to the top.
+  local prev_state = self:_snapshot_state()
 
   for _, entry in ipairs(self.entries) do
     entry:destroy()
@@ -272,7 +373,9 @@ FileHistoryPanel.update_entries = async.wrap(function(self, callback)
     end
 
     local bootstrap_file
-    if not self:cur_file() and self:num_items() > 0 then
+    -- Skip the bootstrap diff when a file will be restored at completion:
+    -- loading the first entry here would just flash before the restore.
+    if not prev_state.cur and not self:cur_file() and self:num_items() > 0 then
       bootstrap_file = self:next_file()
     end
 
@@ -328,8 +431,14 @@ FileHistoryPanel.update_entries = async.wrap(function(self, callback)
   self.updating = false
 
   if not self.shutdown:check() then
+    -- Restore the pre-refresh folds and focused file. `set_file` loads the
+    -- diff; on first open restore is a no-op and the bootstrap's diff stands.
+    local restore_file = self:_restore_state(prev_state)
     self:sync()
     self.option_panel:sync()
+    if restore_file then
+      self.parent:set_file(restore_file)
+    end
     vim.cmd("redraw")
   end
 
