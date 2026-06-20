@@ -67,8 +67,13 @@ function M.init()
   au("TabClosed", {
     group = M.augroup,
     pattern = "*",
-    callback = function(state)
-      M.close(get_tabnr(state))
+    callback = function(_)
+      -- The tab is already gone by the time this fires, so there is nothing
+      -- to close: just dispose of any views whose tabpage no longer exists.
+      -- Schedule it so the tabpage list has settled first.
+      vim.schedule(function()
+        lib.dispose_stray_views()
+      end)
     end,
   })
   au("BufWritePost", {
@@ -179,19 +184,26 @@ function M.dir_diff(args)
   end
 end
 
----@param tabpage? integer
+---@param tabpage? integer # A tabpage handle. When given, the view occupying
+---that tabpage is closed (a no-op if it is not a valid tabpage); otherwise the
+---view in the current tabpage is closed.
 ---@param opts? diffview.View.CloseOpts # Forwarded to `view:close`. With
 ---`force = false`, `DiffView` aborts when stage buffers are modified.
 ---@return boolean closed # `false` if the close was aborted.
 function M.close(tabpage, opts)
+  local view
   if tabpage then
-    vim.schedule(function()
-      lib.dispose_stray_views()
-    end)
-    return true
+    -- Only act on a live tabpage handle. This avoids closing the wrong view
+    -- when a caller passes a stale handle, or a tab number that collides with
+    -- some other view's handle.
+    if not api.nvim_tabpage_is_valid(tabpage) then
+      return true
+    end
+    view = lib.tabpage_to_view(tabpage)
+  else
+    view = lib.get_current_view()
   end
 
-  local view = lib.get_current_view()
   if view then
     local closed = view:close(opts)
     if closed == false then
