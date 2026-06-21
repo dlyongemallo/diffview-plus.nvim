@@ -98,6 +98,15 @@ function M.diffview_open(args)
     return existing
   end
 
+  -- Boolean flag: bare `--no-panel` opens the view without the file panel for
+  -- this invocation, overriding `file_panel.show`. `--no-panel=false` forces
+  -- the panel shown. When absent it falls back to the config value.
+  local raw_no_panel = argo:get_flag("no-panel")
+  local no_panel
+  if type(raw_no_panel) == "boolean" then
+    no_panel = raw_no_panel
+  end
+
   local v = DiffView({
     adapter = adapter,
     rev_arg = rev_arg,
@@ -105,6 +114,7 @@ function M.diffview_open(args)
     left = opts.left,
     right = opts.right,
     options = opts.options,
+    no_panel = no_panel,
   })
 
   if not v:is_valid() then
@@ -198,11 +208,20 @@ function M.file_history(range, args)
     end
   end
 
+  -- See `M.diffview_open` for the `--no-panel` semantics; here it overrides
+  -- `file_history_panel.show`.
+  local raw_no_panel = argo:get_flag("no-panel")
+  local no_panel
+  if type(raw_no_panel) == "boolean" then
+    no_panel = raw_no_panel
+  end
+
   local v = FileHistoryView({
     adapter = adapter,
     log_options = log_options,
     pin_local = pin_local,
     pinned_path = pinned_path,
+    no_panel = no_panel,
   })
 
   if not v:is_valid() then

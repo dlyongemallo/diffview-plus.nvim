@@ -38,6 +38,7 @@ function FileHistoryView:init(opt)
   self.adapter = opt.adapter
   self.pin_local = opt.pin_local
   self.pinned_path = opt.pinned_path
+  self.no_panel = opt.no_panel
   self._pinned_b_files = {}
 
   self:super({
@@ -505,7 +506,7 @@ end
 
 ---@override
 function FileHistoryView:should_show_panel()
-  return config.get_config().file_history_panel.show
+  return self:resolve_panel_visibility(config.get_config().file_history_panel.show)
 end
 
 -- Map a non-pinned layout name to its pinned counterpart. Pinned variants

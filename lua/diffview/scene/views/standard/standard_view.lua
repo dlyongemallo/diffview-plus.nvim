@@ -24,6 +24,7 @@ local M = {}
 ---@field cur_layout Layout
 ---@field cur_entry FileEntry
 ---@field layouts table<Layout, Layout>
+---@field no_panel? boolean # Per-view `--no-panel` override. When set, takes precedence over the panel's `show` config (`nil` means defer to config).
 ---@field cursor_map table<string, table> # Repo-relative path → `winsaveview()` dict; consumed by `file_open_new` to restore cursor + viewport on first open after session restore.
 ---@field package _set_file_in_flight Future? # Active `_set_file` worker; queued callers await this so `await(set_file)` returns only after the latest pending file is opened.
 ---@field package _set_file_pending FileEntry? # Newest file queued while `_set_file_in_flight` is set; the worker picks it up before terminating.
@@ -149,12 +150,25 @@ function StandardView:init_layout()
   self.emitter:emit("post_layout")
 end
 
+---Apply a per-view `--no-panel` override (`self.no_panel`) to a config
+---default. When the flag is unset the config value is used as-is.
+---@param config_default boolean
+---@return boolean
+function StandardView:resolve_panel_visibility(config_default)
+  if self.no_panel ~= nil then
+    return not self.no_panel
+  end
+  return config_default
+end
+
 ---Whether the view's panel should be opened on view init. Subclasses bound
 ---to a specific panel type (DiffView → file_panel, FileHistoryView →
----file_history_panel) override this to read their own config block.
+---file_history_panel) override this to read their own config block. A per-view
+---`--no-panel` flag takes precedence over the config (see
+---`resolve_panel_visibility`).
 ---@return boolean
 function StandardView:should_show_panel()
-  return config.get_config().file_panel.show
+  return self:resolve_panel_visibility(config.get_config().file_panel.show)
 end
 
 function StandardView:post_layout()

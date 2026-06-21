@@ -1548,12 +1548,14 @@ function JjAdapter:init_completion()
   self.comp.open:put({ "selected-file" }, function(_, arg_lead)
     return vim.fn.getcompletion(arg_lead, "file")
   end)
+  self.comp.open:put({ "no-panel" })
 
   self.comp.file_history:put({ "--revisions", "-r" }, function(_, arg_lead)
     return self:rev_candidates(arg_lead, { accept_range = true })
   end)
 
   self.comp.file_history:put({ "--reversed", "-R" })
+  self.comp.file_history:put({ "--no-panel" })
   self.comp.file_history:put({ "--limit", "-n" }, {})
 end
 

@@ -1492,11 +1492,14 @@ function HgAdapter:rev_candidates(arg_lead, opt)
 end
 
 function HgAdapter:init_completion()
+  self.comp.open:put({ "no-panel" })
+
   self.comp.file_history:put({ "--rev", "-r" }, function(_, arg_lead)
     return self:rev_candidates(arg_lead, { accept_range = true })
   end)
 
   self.comp.file_history:put({ "--follow", "-f" })
+  self.comp.file_history:put({ "--no-panel" })
   self.comp.file_history:put({ "--pin-local" })
   self.comp.file_history:put({ "--no-merges", "-M" })
   self.comp.file_history:put({ "--limit", "-l" }, {})

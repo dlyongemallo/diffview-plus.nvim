@@ -64,6 +64,7 @@ function DiffView:init(opt)
   self.rev_arg = opt.rev_arg
   self.left = opt.left
   self.right = opt.right
+  self.no_panel = opt.no_panel
   self.initialized = false
   self.is_loading = true
   self.options = opt.options or {}

@@ -343,6 +343,10 @@ end, { desc = "Commit graph" })
 gitgraph can render the graph with plain box-drawing characters or with Kitty
 terminal branch glyphs via its `symbols` table; see its README for details.
 
+When you open commits from a graph, the graph is already your navigation
+surface, so diffview's own file panel is redundant. Pass `--no-panel` to omit
+it.
+
 </details>
 
 <!-- vim: set tw=80 -->

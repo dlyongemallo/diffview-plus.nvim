@@ -189,6 +189,41 @@ describe("diffview.standard_view should_show_panel", function()
     config.get_config().file_history_panel.show = false
     eq(false, view:should_show_panel())
   end)
+
+  it("--no-panel overrides file_panel.show on a DiffView", function()
+    local view = setmetatable({}, { __index = StandardView })
+
+    config.get_config().file_panel.show = true
+    view.no_panel = true
+    eq(false, view:should_show_panel())
+
+    config.get_config().file_panel.show = false
+    view.no_panel = false
+    eq(true, view:should_show_panel())
+  end)
+
+  it("--no-panel overrides file_history_panel.show on a FileHistoryView", function()
+    local view = setmetatable({}, { __index = FileHistoryView })
+
+    config.get_config().file_history_panel.show = true
+    view.no_panel = true
+    eq(false, view:should_show_panel())
+
+    config.get_config().file_history_panel.show = false
+    view.no_panel = false
+    eq(true, view:should_show_panel())
+  end)
+
+  it("a nil --no-panel defers to the config value", function()
+    local view = setmetatable({}, { __index = StandardView })
+    view.no_panel = nil
+
+    config.get_config().file_panel.show = true
+    eq(true, view:should_show_panel())
+
+    config.get_config().file_panel.show = false
+    eq(false, view:should_show_panel())
+  end)
 end)
 
 describe("diffview.standard_view layout-swap focus", function()

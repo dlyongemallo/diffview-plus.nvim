@@ -1121,12 +1121,14 @@ function P4Adapter:init_completion()
     -- Provide CLs, #head, @, labels?
     return self:rev_candidates(arg_lead, { accept_range = true })
   end)
+  self.comp.open:put({ "no-panel" })
 
   -- Completion for :DiffviewFileHistory flags
   self.comp.file_history:put({ "--rev", "-r" }, function(_, arg_lead)
     -- Provide CLs, #head, @rev1,@rev2 ranges, labels
     return self:rev_candidates(arg_lead, { accept_range = true })
   end)
+  self.comp.file_history:put({ "--no-panel" })
   self.comp.file_history:put({ "--limit", "-m" }, {}) -- Expects number
   self.comp.file_history:put({ "--user", "-u" }, function(_, arg_lead)
     -- Provide list of users? `p4 users`

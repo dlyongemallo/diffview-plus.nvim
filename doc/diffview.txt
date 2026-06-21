@@ -174,6 +174,11 @@ COMMANDS                                        *diffview-commands*
                         file. If the path doesn't match any of the files in
                         the initial set of files, this option does nothing.
 
+        --no-panel      Open the view without the file panel. Overrides
+                        |diffview-config-file_panel| `show` for this
+                        invocation; pass `--no-panel=false` to force the panel
+                        shown.
+
                                                 *:DiffviewDiffFiles*
 :DiffviewDiffFiles {file1} {file2}
 
@@ -354,6 +359,12 @@ COMMANDS                                        *diffview-commands*
     you're targeting. You will find the available options for the supported
     VCS tools below. The command completion will do it's best to suggest the
     appropriate options.
+
+    Common Options (all adapters): ~
+        --no-panel
+                Open the history view without the file history panel.
+                Overrides |diffview-config-file_history_panel| `show` for this
+                invocation; pass `--no-panel=false` to force it shown.
 
     Git Options: ~
         --base={git-rev}
