@@ -90,13 +90,14 @@ end
 ---@param self CommitLogPanel
 ---@param args string|string[]
 CommitLogPanel.update = async.void(function(self, args)
+  args = args or self.args
   if type(args) ~= "table" then
     args = { args }
   end
 
   local job = Job({
     command = self.adapter:bin(),
-    args = self.adapter:get_log_args(args or self.args),
+    args = self.adapter:get_log_args(args),
     cwd = self.adapter.ctx.toplevel,
   })
 
