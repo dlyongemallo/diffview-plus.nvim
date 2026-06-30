@@ -693,16 +693,20 @@ M.defaults = {
       { "n", "g?", actions.help({ "view", "diff2" }), { desc = "Open the help panel" } },
     },
     diff3 = utils.vec_join({
-      -- Mappings in 3-way diff layouts
-      { { "n", "x" }, "2do",  actions.diffget("ours"),            { desc = "Obtain the diff hunk from the OURS version of the file" } },
-      { { "n", "x" }, "3do",  actions.diffget("theirs"),          { desc = "Obtain the diff hunk from the THEIRS version of the file" } },
+      -- Mappings in 3-way diff layouts.
+      -- `Ndo` runs `:diffget` against a side buffer: it pulls the vim
+      -- diff hunk under the cursor, marker-agnostic. `<leader>co/ct/cb`
+      -- (`conflict_choose`) operates on conflict marker blocks instead.
+      { { "n", "x" }, "2do",  actions.diffget("ours"),            { desc = "Diffget the cursor hunk from OURS" } },
+      { { "n", "x" }, "3do",  actions.diffget("theirs"),          { desc = "Diffget the cursor hunk from THEIRS" } },
       { "n",          "g?",   actions.help({ "view", "diff3" }),  { desc = "Open the help panel" } },
     }, conflict_keymaps),
     diff4 = utils.vec_join({
-      -- Mappings in 4-way diff layouts
-      { { "n", "x" }, "1do",  actions.diffget("base"),            { desc = "Obtain the diff hunk from the BASE version of the file" } },
-      { { "n", "x" }, "2do",  actions.diffget("ours"),            { desc = "Obtain the diff hunk from the OURS version of the file" } },
-      { { "n", "x" }, "3do",  actions.diffget("theirs"),          { desc = "Obtain the diff hunk from the THEIRS version of the file" } },
+      -- Mappings in 4-way diff layouts. See the `diff3` block above for
+      -- the `Ndo` vs `<leader>co/ct/cb` distinction.
+      { { "n", "x" }, "1do",  actions.diffget("base"),            { desc = "Diffget the cursor hunk from BASE" } },
+      { { "n", "x" }, "2do",  actions.diffget("ours"),            { desc = "Diffget the cursor hunk from OURS" } },
+      { { "n", "x" }, "3do",  actions.diffget("theirs"),          { desc = "Diffget the cursor hunk from THEIRS" } },
       { "n",          "g?",   actions.help({ "view", "diff4" }),  { desc = "Open the help panel" } },
     }, conflict_keymaps),
     file_panel = utils.vec_join(common_panel_keymaps, common_nav_keymaps, {
