@@ -75,6 +75,7 @@ local pl = lazy.access(utils, "path") --[[@as PathLib ]]
 ---@field unstage_all fun()
 ---@field conflict_choose fun(target: DiffviewConflictTarget): fun()
 ---@field conflict_choose_all fun(target: DiffviewConflictTarget): AsyncFunc
+---@field conflict_choose_side fun(target: DiffviewConflictSideTarget): AsyncFunc
 ---@field cycle_layout fun()
 ---@field diff_against_default_branch fun()
 ---@field diffget fun(target: DiffviewDiffgetTarget): fun()
@@ -764,6 +765,55 @@ function M.conflict_choose(target)
       end
     end
   end, "merge_only")
+end
+
+---Replace the entire MERGED buffer with the content of the OURS, THEIRS, or
+---BASE side. Unlike `conflict_choose_all`, this does not parse conflict
+---markers; it overwrites the whole buffer with the side's lines. Useful when
+---the merge driver did not emit markers (e.g., modify/delete conflicts, or
+---jj with `merge-tool-edits-conflict-markers = false`).
+---@param target DiffviewConflictSideTarget
+---@return AsyncFunc
+function M.conflict_choose_side(target)
+  return tag(
+    async.void(function()
+      local view = lib.get_current_view() --[[@as DiffView ]]
+
+      if not (view and view:instanceof(DiffView.__get())) then
+        return
+      end
+      ---@cast view DiffView
+
+      if view.panel:is_focused() then
+        local item = view:infer_cur_file(false) ---@cast item -DirData
+        if not item then
+          return
+        end
+
+        if not item.active then
+          await(view:set_file(item))
+        end
+      end
+
+      local main, bufnr = get_valid_main(view)
+      if not main then
+        return
+      end
+      ---@cast bufnr integer
+
+      local src_bufnr = diff_copy_target(target)
+      if not (src_bufnr and api.nvim_buf_is_valid(src_bufnr)) then
+        return
+      end
+
+      local src_lines = api.nvim_buf_get_lines(src_bufnr, 0, -1, false)
+      api.nvim_buf_set_lines(bufnr, 0, -1, false, src_lines)
+
+      utils.set_cursor(main.id, 1, 0)
+      view.cur_layout:sync_scroll()
+    end),
+    "merge_only"
+  )
 end
 
 ---@param target DiffviewDiffgetTarget

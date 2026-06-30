@@ -50,6 +50,7 @@ end
 
 -- Targets consumed by action factories in `actions.lua` (referenced from keymaps).
 ---@alias DiffviewConflictTarget "ours"|"theirs"|"base"|"all"|"none"
+---@alias DiffviewConflictSideTarget "ours"|"theirs"|"base"
 ---@alias DiffviewDiffgetTarget "ours"|"theirs"|"base"|"local"
 
 ---@class DiffviewKeymapOpts
@@ -120,6 +121,9 @@ local conflict_keymaps = {
   { "n", "<leader>cB",  actions.conflict_choose_all("base"),    { desc = "Choose the BASE version of a conflict for the whole file" } },
   { "n", "<leader>cA",  actions.conflict_choose_all("all"),     { desc = "Choose all the versions of a conflict for the whole file" } },
   { "n", "dX",          actions.conflict_choose_all("none"),    { desc = "Delete the conflict region for the whole file" } },
+  { "n", "<leader>cso", actions.conflict_choose_side("ours"),   { desc = "Replace the MERGED buffer with the entire OURS side" } },
+  { "n", "<leader>cst", actions.conflict_choose_side("theirs"), { desc = "Replace the MERGED buffer with the entire THEIRS side" } },
+  { "n", "<leader>csb", actions.conflict_choose_side("base"),   { desc = "Replace the MERGED buffer with the entire BASE side" } },
 }
 
 ---@class DiffviewConfig

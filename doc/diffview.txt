@@ -133,6 +133,16 @@ COMMANDS                                        *diffview-commands*
           • `dx`: Choose none of the versions of the conflict (delete the
             conflict region).
 
+        For operating on the merged file as a whole (useful when the merge
+        driver did not emit conflict markers, e.g., modify/delete conflicts
+        or jj with `merge-tool-edits-conflict-markers = false`):
+          • `<leader>cso`: Replace the merged buffer with the entire OURS
+            side.
+          • `<leader>cst`: Replace the merged buffer with the entire THEIRS
+            side.
+          • `<leader>csb`: Replace the merged buffer with the entire BASE
+            side.
+
         For more info on these actions, see
         |diffview-actions-conflict_choose|.
 
@@ -1717,6 +1727,22 @@ conflict_choose_all({version})                  *diffview-actions-conflict_choos
 
         Parameters: ~
             {version} `'ours'|'theirs'|'base'|'all'|'none'`
+                See |diffview-conflict-versions| to tell what versions of the
+                file these names correspond with.
+
+conflict_choose_side({version})                 *diffview-actions-conflict_choose_side*
+        Contexts: `merge_tool`, `file_panel`
+
+        Replace the entire merged buffer with the content of one whole side
+        (OURS, THEIRS, or BASE). Unlike |diffview-actions-conflict_choose_all|,
+        this does not parse conflict markers; it overwrites the buffer with
+        the side's lines verbatim. Useful when the merge driver did not emit
+        conflict markers (e.g., modify/delete conflicts, or jj with
+        `merge-tool-edits-conflict-markers = false`); accepting a side whose
+        path was empty effectively accepts the delete.
+
+        Parameters: ~
+            {version} `'ours'|'theirs'|'base'`
                 See |diffview-conflict-versions| to tell what versions of the
                 file these names correspond with.
 

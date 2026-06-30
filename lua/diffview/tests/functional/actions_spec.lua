@@ -279,6 +279,12 @@ describe("diffview.actions._is_applicable", function()
     assert.is_true(actions._is_applicable(fn, make_view({ merge_ctx = true })))
   end)
 
+  it("propagates `merge_only` tag through `conflict_choose_side` factory", function()
+    local fn = actions.conflict_choose_side("ours")
+    assert.is_false(actions._is_applicable(fn, make_view()))
+    assert.is_true(actions._is_applicable(fn, make_view({ merge_ctx = true })))
+  end)
+
   it("returns false when view is nil and the action is `merge_only`", function()
     assert.is_false(actions._is_applicable(actions.next_conflict, nil))
   end)
