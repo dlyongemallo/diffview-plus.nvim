@@ -741,6 +741,7 @@ M.defaults = {
     option_panel = {
       { "n", "<tab>", actions.select_entry,          { desc = "Change the current option" } },
       { "n", "q",     actions.close,                 { desc = "Close the panel" } },
+      { "n", "<esc>", actions.close,                 { desc = "Close the panel" } },
       { "n", "g?",    actions.help("option_panel"),  { desc = "Open the help panel" } },
     },
     help_panel = {
