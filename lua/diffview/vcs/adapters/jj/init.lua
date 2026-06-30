@@ -332,8 +332,10 @@ end
 function JjAdapter:get_log_args(args)
   -- `jj log` treats positional arguments as filesets, so non-flag args (the
   -- revsets `JjRev.to_range` produces) need to go through `-r`. Flags pass
-  -- through unchanged.
-  local out = { "log" }
+  -- through unchanged. `self:args()` carries any user-configured global
+  -- flags (e.g., `--repository`) ahead of the subcommand, matching how
+  -- `get_show_args` builds its invocation.
+  local out = utils.vec_join(self:args(), "log")
   for _, arg in ipairs(args) do
     if vim.startswith(arg, "-") then
       utils.vec_push(out, arg)

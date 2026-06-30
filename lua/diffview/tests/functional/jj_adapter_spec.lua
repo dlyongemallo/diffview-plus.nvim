@@ -274,6 +274,18 @@ describe("diffview.vcs.adapters.jj", function()
 
       eq({ "log", "-n10", "-r", "abc123" }, adapter:get_log_args({ "-n10", "abc123" }))
     end)
+
+    it("prepends user-configured global flags from `jj_cmd`", function()
+      local adapter = new_adapter()
+      adapter.get_command = function(_)
+        return { "jj", "--repository", "/some/path" }
+      end
+
+      eq(
+        { "--repository", "/some/path", "log", "-r", "abc123" },
+        adapter:get_log_args({ "abc123" })
+      )
+    end)
   end)
 
   describe("_warn_once()", function()
