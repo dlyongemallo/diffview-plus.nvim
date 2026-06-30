@@ -883,7 +883,8 @@ end
 ---Each commit produces exactly one line terminated by `\n`. Fields within a
 ---commit are separated by `\x01` (ASCII SOH). The final field is the file
 ---list, where individual file entries are separated by `\x1e` (ASCII RS)
----and each entry's `<status, path>` pair is separated by `\x1f` (ASCII US).
+---and each entry's `<status, path, additions, deletions>` tuple is separated
+---by `\x1f` (ASCII US).
 ---
 ---Choosing a one-line-per-commit format -- rather than the line-per-field
 ---layout used by the hg adapter -- sidesteps two problems unique to jj:
@@ -896,8 +897,15 @@ end
 ---
 ---Three distinct control chars (`\x01`, `\x1e`, `\x1f`) are needed because
 ---the file-list field contains nested separators: if the outer field
----separator and the inner `<status, path>` separator were the same byte, a
----single top-level split would shred each file entry into two fields.
+---separator and the inner tuple separator were the same byte, a single
+---top-level split would shred each file entry into multiple fields.
+---
+---The per-file stats come from `diff.stat().files()` rather than
+---`diff.files()`: `DiffStatEntry` carries `.lines_added()` and
+---`.lines_removed()`, which `TreeDiffEntry` does not. Both lists are derived
+---from the same diff and report the same files in the same order (binary
+---files show as `0/0`), so the swap doesn't change which files surface in
+---the panel.
 ---
 ---Field order, by index:
 ---  1. commit_id (full hash)
@@ -909,7 +917,8 @@ end
 ---  7. relative date (e.g. `2 minutes ago`)
 ---  8. ref names (comma-separated local bookmarks + tags)
 ---  9. subject (first line of description)
----  10. files blob (`\x1e`-separated entries, each `<status>\x1f<path>`)
+---  10. files blob (`\x1e`-separated entries, each
+---      `<status>\x1f<path>\x1f<additions>\x1f<deletions>`)
 local FH_TEMPLATE = table.concat({
   [[ commit_id ++ "\x01" ]],
   [[ ++ change_id ++ "\x01" ]],
@@ -920,7 +929,10 @@ local FH_TEMPLATE = table.concat({
   [[ ++ author.timestamp().ago() ++ "\x01" ]],
   [[ ++ separate(", ", local_bookmarks, tags) ++ "\x01" ]],
   [[ ++ description.first_line() ++ "\x01" ]],
-  [[ ++ diff.files().map(|f| f.status_char() ++ "\x1f" ++ f.target().path()).join("\x1e") ++ "\n" ]],
+  [[ ++ diff.stat().files().map(|f| ]],
+  [[ f.status_char() ++ "\x1f" ++ f.path() ]],
+  [[ ++ "\x1f" ++ f.lines_added() ++ "\x1f" ++ f.lines_removed() ]],
+  [[ ).join("\x1e") ++ "\n" ]],
 }, "")
 
 ---Parse one line of jj log output (a single `\x01`-separated commit record)
@@ -953,20 +965,30 @@ local function structure_fh_data(line)
   local left_hash = clean_parent(parents[1])
   local merge_hash = clean_parent(parents[2])
 
-  -- The trailing field is a `\x1e`-separated list of `status\x1fpath` pairs.
+  -- The trailing field is a `\x1e`-separated list of
+  -- `<status>\x1f<path>\x1f<additions>\x1f<deletions>` tuples. jj returns
+  -- `lines_added()`/`lines_removed()` as integer 0 for binary files (and for
+  -- mode-only or pure-rename changes), so collapse the `(0, 0)` case to
+  -- `stats = nil`, matching how the git adapter handles `- -` numstat for
+  -- binaries (see `git/parser.lua:parse_namestat_entry`).
   local namestat = {}
   local files_blob = fields[10] or ""
   if files_blob ~= "" then
     for _, entry in ipairs(vim.split(files_blob, "\x1e", { plain = true })) do
-      -- Reuse the line format the old per-line parser expected so
-      -- `parse_fh_data` doesn't need to change shape: `"<status> <path>"`.
-      local sep = entry:find("\x1f", 1, true)
-      if sep then
-        local status = entry:sub(1, sep - 1)
-        local path = entry:sub(sep + 1)
-        if status ~= "" and path ~= "" then
-          namestat[#namestat + 1] = status .. " " .. path
+      local parts = vim.split(entry, "\x1f", { plain = true })
+      local status, path = parts[1], parts[2]
+      if path and status ~= "" and path ~= "" then
+        local additions = tonumber(parts[3])
+        local deletions = tonumber(parts[4])
+        local stats
+        if additions and deletions and (additions > 0 or deletions > 0) then
+          stats = { additions = additions, deletions = deletions }
         end
+        namestat[#namestat + 1] = {
+          status = status,
+          path = path,
+          stats = stats,
+        }
       end
     end
   end
@@ -1203,9 +1225,8 @@ function JjAdapter:parse_fh_data(data, commit, state)
   -- always diff each commit against its parent. The pin-local code paths
   -- mirroring the git/hg adapters are deferred until `build_local_log_entry`
   -- lands for jj.
-  for _, line in ipairs(data.namestat) do
-    local status, path = line:match("^(%S)%s+(.+)$")
-    if status and path and in_scope(path) then
+  for _, file in ipairs(data.namestat) do
+    if in_scope(file.path) then
       -- TODO: surface rename source. jj exposes `f.source().path()` on
       -- TreeDiffEntry; threading it into the template + parser is a follow-up.
       local oldname = nil
@@ -1219,10 +1240,10 @@ function JjAdapter:parse_fh_data(data, commit, state)
         self:build_pin_local_file_entry({
           layout_class = state.layout_opt.default_layout or Diff2Hor,
           layout_opt = state.layout_opt,
-          path = path,
+          path = file.path,
           oldpath = oldname,
-          status = status,
-          stats = nil,
+          status = file.status,
+          stats = file.stats,
           commit = commit,
           rev_a = rev_a,
           rev_b = rev_b,

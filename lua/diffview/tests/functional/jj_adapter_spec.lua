@@ -894,6 +894,63 @@ describe("diffview.vcs.adapters.jj", function()
       )
 
       it(
+        "populates per-file and per-commit stats from `diff.stat()`",
+        helpers.async_test(function()
+          if not jj_available() then
+            pending("jj not installed")
+            return
+          end
+
+          repo.write("a.txt", "alpha\nbeta\ngamma\n")
+          repo.jj({ "describe", "-m", "seed a" })
+          repo.jj({ "new" })
+          repo.write("a.txt", "alpha\nGAMMA\ndelta\n")
+          repo.write("b.txt", "first\nsecond\n")
+          repo.jj({ "describe", "-m", "edit a, add b" })
+
+          local adapter = repo.adapter()
+          local AsyncListStream = require("diffview.stream").AsyncListStream
+          local JobStatus = require("diffview.vcs.utils").JobStatus
+
+          local stream = AsyncListStream()
+          adapter:file_history_worker(stream, {
+            log_opt = {
+              single_file = { path_args = {}, revisions = "::@" },
+              multi_file = { path_args = {}, revisions = "::@" },
+            },
+            layout_opt = { default_layout = Diff2, merge_layout = Diff2 },
+          })
+
+          local by_subject = {}
+          for _, item in stream:iter() do
+            local status, log_entry = unpack(item, 1, 2)
+            if status == JobStatus.PROGRESS and log_entry then
+              by_subject[log_entry.commit.subject] = log_entry
+            end
+          end
+
+          local edit = by_subject["edit a, add b"]
+          assert.is_not_nil(edit, "missing 'edit a, add b' in entries")
+
+          local by_path = {}
+          for _, f in ipairs(edit.files) do
+            by_path[f.path] = f
+          end
+
+          -- `a.txt` rewrites lines 2-3: 2 additions, 2 deletions.
+          assert.is_not_nil(by_path["a.txt"], "missing a.txt in 'edit a, add b'")
+          assert.same({ additions = 2, deletions = 2 }, by_path["a.txt"].stats)
+
+          -- `b.txt` is brand new: 2 additions, 0 deletions.
+          assert.is_not_nil(by_path["b.txt"], "missing b.txt in 'edit a, add b'")
+          assert.same({ additions = 2, deletions = 0 }, by_path["b.txt"].stats)
+
+          -- The per-commit stat is the sum of its files.
+          assert.same({ additions = 4, deletions = 2 }, edit.stats)
+        end)
+      )
+
+      it(
         "tracks the literal glob-character file, not its glob sibling",
         helpers.async_test(function()
           if not jj_available() then
@@ -1047,7 +1104,10 @@ describe("diffview.vcs.adapters.jj", function()
     end
 
     it("parses a full commit record", function()
-      local files = "M" .. US .. "a.txt" .. RS .. "A" .. US .. "b.txt"
+      local files = table.concat({
+        "M" .. US .. "a.txt" .. US .. "3" .. US .. "1",
+        "A" .. US .. "b.txt" .. US .. "5" .. US .. "0",
+      }, RS)
       local data = structure_fh_data(build_line({
         "deadbeef",
         "qpzqyx",
@@ -1071,7 +1131,10 @@ describe("diffview.vcs.adapters.jj", function()
       assert.equals("5 minutes ago", data.rel_date)
       assert.equals("main", data.ref_names)
       assert.equals("feat: add b", data.subject)
-      eq({ "M a.txt", "A b.txt" }, data.namestat)
+      eq({
+        { status = "M", path = "a.txt", stats = { additions = 3, deletions = 1 } },
+        { status = "A", path = "b.txt", stats = { additions = 5, deletions = 0 } },
+      }, data.namestat)
     end)
 
     it("returns nil for the root commit (null-tree hash)", function()
@@ -1120,7 +1183,7 @@ describe("diffview.vcs.adapters.jj", function()
         "",
         "", -- no ref names
         "", -- no subject
-        "M" .. US .. "f.txt",
+        "M" .. US .. "f.txt" .. US .. "2" .. US .. "4",
       })
       local data = structure_fh_data(line)
       assert.equals("abc", data.right_hash)
@@ -1128,7 +1191,10 @@ describe("diffview.vcs.adapters.jj", function()
       assert.equals(1700000000, data.time)
       assert.equals("", data.ref_names)
       assert.equals("", data.subject)
-      eq({ "M f.txt" }, data.namestat)
+      eq(
+        { { status = "M", path = "f.txt", stats = { additions = 2, deletions = 4 } } },
+        data.namestat
+      )
     end)
 
     it("yields an empty namestat when the commit has no diff", function()
@@ -1148,7 +1214,16 @@ describe("diffview.vcs.adapters.jj", function()
     end)
 
     it("splits multiple file entries on the RS separator", function()
-      local files = "A" .. US .. "x" .. RS .. "M" .. US .. "y" .. RS .. "D" .. US .. "z"
+      -- The middle entry covers jj's binary-file shape: `lines_added()` and
+      -- `lines_removed()` both render as integer `0`, with no sentinel. The
+      -- parser collapses `(0, 0)` to `stats = nil` so binary (and pure-rename
+      -- or mode-only) changes don't surface a misleading "0, 0" in the panel,
+      -- matching the git adapter's `- -` numstat handling.
+      local files = table.concat({
+        "A" .. US .. "x" .. US .. "1" .. US .. "0",
+        "M" .. US .. "y" .. US .. "0" .. US .. "0",
+        "D" .. US .. "z" .. US .. "0" .. US .. "7",
+      }, RS)
       local data = structure_fh_data(build_line({
         "abc",
         "xyz",
@@ -1161,7 +1236,11 @@ describe("diffview.vcs.adapters.jj", function()
         "multi",
         files,
       }))
-      eq({ "A x", "M y", "D z" }, data.namestat)
+      eq({
+        { status = "A", path = "x", stats = { additions = 1, deletions = 0 } },
+        { status = "M", path = "y" },
+        { status = "D", path = "z", stats = { additions = 0, deletions = 7 } },
+      }, data.namestat)
     end)
   end)
 
@@ -1212,7 +1291,9 @@ describe("diffview.vcs.adapters.jj", function()
       local data = {
         left_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         right_hash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        namestat = { "M foo.txt" },
+        namestat = {
+          { status = "M", path = "foo.txt", stats = { additions = 3, deletions = 1 } },
+        },
       }
 
       local success, log_entry = adapter:parse_fh_data(data, {}, state)
@@ -1221,6 +1302,8 @@ describe("diffview.vcs.adapters.jj", function()
 
       assert.equals(1, #log_entry.files)
       assert.equals("foo.txt", log_entry.files[1].path)
+      assert.same({ additions = 3, deletions = 1 }, log_entry.files[1].stats)
+      assert.same({ additions = 3, deletions = 1 }, log_entry.stats)
 
       pcall(vim.fn.delete, repo, "rf")
     end)
@@ -1240,7 +1323,9 @@ describe("diffview.vcs.adapters.jj", function()
       local data = {
         left_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         right_hash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        namestat = { "M unrelated.txt" },
+        namestat = {
+          { status = "M", path = "unrelated.txt", stats = { additions = 1, deletions = 0 } },
+        },
       }
 
       local success, msg = adapter:parse_fh_data(data, {}, state)
