@@ -1,3 +1,4 @@
+local actions = require("diffview.actions")
 local helpers = require("diffview.tests.helpers")
 local lib = require("diffview.lib")
 local Diff3Hor = require("diffview.scene.layouts.diff_3_hor").Diff3Hor
@@ -139,6 +140,20 @@ describe("diffview.scene.views.diff.file_merge_view", function()
       eq(output_path, layout.b.file.path) -- OUTPUT (editable)
       eq(right_path, layout.c.file.path) -- THEIRS
       eq(base_path, layout.d.file.path) -- BASE
+    end)
+
+    it("populates `merge_ctx` so `merge_only` keymaps show in the help panel", function()
+      local adapter = NullAdapter.create({ toplevel = "/tmp" })
+      local view = FileMergeView({
+        adapter = adapter,
+        output_path = output_path,
+        left_path = left_path,
+        right_path = right_path,
+      })
+
+      assert.is_not_nil(view.merge_ctx)
+      assert.is_true(actions._is_applicable(actions.conflict_choose("ours"), view))
+      assert.is_true(actions._is_applicable(actions.conflict_choose_all("ours"), view))
     end)
   end)
 

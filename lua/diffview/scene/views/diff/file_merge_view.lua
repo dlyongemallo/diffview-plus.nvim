@@ -100,6 +100,12 @@ function FileMergeView:init(opt)
 
   self.files:set_conflicting({ entry })
   self.files:update_file_trees()
+
+  -- Keep `merge_only` keymaps visible in the help panel (filtered by
+  -- `actions._is_applicable` via `merge_ctx ~= nil`). Field values are
+  -- unread: their only consumer, `FileEntry:update_merge_context`, runs
+  -- from `DiffView:update_files`, which `NullDiffView` no-ops.
+  self.merge_ctx = { ours = { hash = "" }, theirs = { hash = "" }, base = { hash = "" } }
 end
 
 -- `post_open`, `init_layout`, and `update_files` are inherited from
