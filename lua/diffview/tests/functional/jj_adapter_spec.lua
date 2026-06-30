@@ -244,6 +244,38 @@ describe("diffview.vcs.adapters.jj", function()
     end)
   end)
 
+  describe("get_log_args()", function()
+    it("returns just `log` when no args are given", function()
+      local adapter = new_adapter()
+
+      eq({ "log" }, adapter:get_log_args({}))
+    end)
+
+    it("wraps a single revset in `-r` so `jj log` reads it as a revision", function()
+      local adapter = new_adapter()
+
+      eq({ "log", "-r", "abc123" }, adapter:get_log_args({ "abc123" }))
+    end)
+
+    it("wraps an `a..b` range revset in `-r`", function()
+      local adapter = new_adapter()
+
+      eq({ "log", "-r", "abc123..def456" }, adapter:get_log_args({ "abc123..def456" }))
+    end)
+
+    it("wraps each revset when given multiple positional args", function()
+      local adapter = new_adapter()
+
+      eq({ "log", "-r", "abc", "-r", "def" }, adapter:get_log_args({ "abc", "def" }))
+    end)
+
+    it("mixes flags and revsets without re-wrapping flags", function()
+      local adapter = new_adapter()
+
+      eq({ "log", "-n10", "-r", "abc123" }, adapter:get_log_args({ "-n10", "abc123" }))
+    end)
+  end)
+
   describe("_warn_once()", function()
     local orig_warn
 

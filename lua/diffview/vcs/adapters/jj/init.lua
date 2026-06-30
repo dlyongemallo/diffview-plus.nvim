@@ -330,7 +330,18 @@ end
 ---@param args string[]
 ---@return string[]
 function JjAdapter:get_log_args(args)
-  return utils.vec_join("log", args)
+  -- `jj log` treats positional arguments as filesets, so non-flag args (the
+  -- revsets `JjRev.to_range` produces) need to go through `-r`. Flags pass
+  -- through unchanged.
+  local out = { "log" }
+  for _, arg in ipairs(args) do
+    if vim.startswith(arg, "-") then
+      utils.vec_push(out, arg)
+    else
+      utils.vec_push(out, "-r", arg)
+    end
+  end
+  return out
 end
 
 ---@param path string
