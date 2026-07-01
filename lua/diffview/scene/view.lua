@@ -188,6 +188,13 @@ function View:open()
   apply_diffopt(self)
   DiffviewGlobal.emitter:emit("view_opened", self)
   DiffviewGlobal.emitter:emit("view_enter", self)
+  -- Drain `post_open`'s scheduled entry setup before returning. Otherwise
+  -- typeahead after the command can reach a buffer whose diffview keymap
+  -- hasn't attached yet and falls through to native `:diffget` (see #262).
+  vim.wait(2000, function()
+    ---@diagnostic disable-next-line: undefined-field
+    return self.ready and self.cur_entry ~= nil
+  end)
 end
 
 ---@param opts? diffview.View.CloseOpts # Forwarded to subclass overrides; ignored at the base level.

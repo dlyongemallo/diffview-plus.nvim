@@ -249,4 +249,29 @@ describe("diffview.scene.views.diff.file_merge_view", function()
       os.remove(right)
     end)
   end)
+
+  -- Regression: `View:open` waits for the scheduled entry setup so
+  -- typeahead after `:DiffviewMergeFiles` reaches the real MERGED buffer
+  -- with its `Ndo` keymap attached (issue #262).
+  describe("FileMergeView:open (issue #262 race guard)", function()
+    it("populates `cur_entry` and `ready` before returning", function()
+      local output = tmpfile("<<<<<<< HEAD\nc\n=======\ne\n>>>>>>> what\n")
+      local base = tmpfile("a\n")
+      local left = tmpfile("c\n")
+      local right = tmpfile("e\n")
+
+      local view = lib.diffview_merge_files({ output, base, left, right })
+      assert.is_not_nil(view)
+      view:open()
+
+      assert.is_true(view.ready)
+      assert.is_not_nil(view.cur_entry)
+
+      helpers.close_view(view)
+      os.remove(output)
+      os.remove(base)
+      os.remove(left)
+      os.remove(right)
+    end)
+  end)
 end)
