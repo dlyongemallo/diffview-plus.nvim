@@ -27,6 +27,7 @@ local M = {}
 
 ---@class JjAdapter : VCSAdapter
 ---@operator call : JjAdapter
+---@field _merge_context_cache? JjAdapter.MergeContextData # Set by `tracked_files` when it detects a working-copy conflict; read by `get_merge_context`.
 local JjAdapter = oop.create_class("JjAdapter", VCSAdapter)
 
 JjAdapter.Rev = JjRev
@@ -1419,6 +1420,146 @@ function JjAdapter:show_untracked(opt)
   return false
 end
 
+---@class JjAdapter.MergeContextData
+---@field paths string[] # Conflicted file paths (workspace-relative).
+---@field ours string # First-parent commit id.
+---@field theirs string # Second-parent commit id.
+---@field base? string # Merge-base commit id; nil when `fork_point` yields nothing.
+
+---@param self JjAdapter
+---@param revset string
+---@param template string
+---@param label string
+---@return diffview.Job
+local function log_job(self, revset, template, label)
+  return Job({
+    command = self:bin(),
+    args = utils.vec_join(self:args(), "log", "-r", revset, "--no-graph", "-T", template),
+    cwd = self.ctx.toplevel,
+    log_opt = { label = label },
+  })
+end
+
+---Restrict `ctx.paths` to those inside the user's pathspec, dropping the
+---ctx entirely if nothing remains. Prefix-match is best-effort: bare paths
+---match by directory prefix (`foo` matches `foo/bar.txt`); anything with
+---jj-fileset metacharacters (`~`, `&`, `|`, `+`, `-`, `(`, `)`, `:`, `~`,
+---`^`, `*`, `?`, `[`, `]`, `{`, `}`) skips the filter for that entry rather
+---than risk under-including. Returns `ctx` unchanged when `path_args` is
+---empty (no scoping requested).
+---@param ctx JjAdapter.MergeContextData?
+---@param path_args string[]?
+---@return JjAdapter.MergeContextData?
+local function filter_conflict_paths(ctx, path_args)
+  if not ctx or not path_args or #path_args == 0 then
+    return ctx
+  end
+
+  local prefixes = {}
+  for _, arg in ipairs(path_args) do
+    if arg:match("[~&|+%-():^*?%[%]{}]") then
+      -- Complex fileset expression: skip Lua-side filtering and be
+      -- permissive (over-inclusive) rather than drop legitimate matches.
+      return ctx
+    end
+    prefixes[#prefixes + 1] = arg:gsub("/+$", "")
+  end
+
+  local kept = {}
+  for _, path in ipairs(ctx.paths) do
+    for _, prefix in ipairs(prefixes) do
+      if path == prefix or vim.startswith(path, prefix .. "/") then
+        kept[#kept + 1] = path
+        break
+      end
+    end
+  end
+
+  if #kept == 0 then
+    return nil
+  end
+
+  return {
+    paths = kept,
+    ours = ctx.ours,
+    theirs = ctx.theirs,
+    base = ctx.base,
+  }
+end
+
+---Query the working copy for a 2-sided merge conflict context. Returns nil
+---for non-conflicts and for merges with 0, 1, or 3+ parents (the
+---OURS/THEIRS/BASE slots in `vcs.MergeContext` can't represent them); N-way
+---conflicts log a warning to `:DiffviewLog` before returning nil.
+---@param self JjAdapter
+---@param callback fun(err: string[]?, ctx: JjAdapter.MergeContextData?)
+JjAdapter._query_merge_context = async.wrap(function(self, callback)
+  -- Delimit paths with `\x1f` (Unit Separator) rather than `\n` so filenames
+  -- containing literal newlines don't get shredded by the line-based stdout
+  -- reader. Concatenate stdout back into one stream first, then split.
+  local paths_job = log_job(
+    self,
+    "@",
+    [[self.conflicted_files().map(|f| f.path()).join("\x1f")]],
+    "JjAdapter:_query_merge_context() paths"
+  )
+  if not await(paths_job) or paths_job.code ~= 0 then
+    callback(paths_job.stderr or {}, nil)
+    return
+  end
+
+  local paths = vim.tbl_filter(function(s)
+    return s ~= ""
+  end, vim.split(table.concat(paths_job.stdout, "\n"), "\x1f", { plain = true }))
+  if #paths == 0 then
+    callback(nil, nil)
+    return
+  end
+
+  -- `parents.map(...)` iterates in positional order, so index 1 is OURS,
+  -- index 2 is THEIRS.
+  local parents_job = log_job(
+    self,
+    "@",
+    [[parents.map(|c| c.commit_id()).join("\n")]],
+    "JjAdapter:_query_merge_context() parents"
+  )
+  if not await(parents_job) or parents_job.code ~= 0 then
+    callback(parents_job.stderr or {}, nil)
+    return
+  end
+
+  local parents = vim.tbl_filter(function(s)
+    return s ~= ""
+  end, parents_job.stdout)
+  if #parents ~= 2 then
+    logger:warn(
+      fmt(
+        "[JjAdapter] Skipping merge-tool layout for %d conflicted file(s): "
+          .. "working copy has %d parent(s), only 2-sided merges are supported.",
+        #paths,
+        #parents
+      )
+    )
+    callback(nil, nil)
+    return
+  end
+
+  local ctx = { paths = paths, ours = parents[1], theirs = parents[2] }
+
+  -- `latest(fork_point(@-), 1)` matches the sibling pattern at
+  -- `symmetric_diff_revs`: bare `fork_point(@-)` can resolve to multiple
+  -- commits in a criss-cross merge, and `commit_id` templates would
+  -- concatenate them into a garbage 80+ char string without `latest(..., 1)`.
+  local base_job =
+    log_job(self, "latest(fork_point(@-), 1)", "commit_id", "JjAdapter:_query_merge_context() base")
+  if await(base_job) and base_job.code == 0 and base_job.stdout[1] and base_job.stdout[1] ~= "" then
+    ctx.base = base_job.stdout[1]
+  end
+
+  callback(nil, ctx)
+end)
+
 ---@param self JjAdapter
 ---@param left Rev
 ---@param right Rev
@@ -1442,37 +1583,100 @@ JjAdapter.tracked_files = async.wrap(function(self, left, right, args, kind, opt
     return
   end
 
-  local files = {}
+  -- Detect conflicts only when the caller is showing the working copy
+  -- (`right == LOCAL`); a historical range like `v1.0..v1.1` doesn't touch
+  -- `@` even though `kind == "working"` (that's a FileDict bucket name,
+  -- not a claim about the diff endpoints). Also require a merge layout to
+  -- render into. Cache the result so `get_merge_context` can serve
+  -- `DiffView:update_files` without re-querying jj.
+  local merge_ctx
+  if kind == "working" and opt.merge_layout and right.type == RevType.LOCAL then
+    local _, ctx = await(self:_query_merge_context())
+    merge_ctx = filter_conflict_paths(ctx, self.ctx.path_args)
+    self._merge_context_cache = merge_ctx
+  end
 
+  local conflicting = {}
+  if merge_ctx then
+    for _, p in ipairs(merge_ctx.paths) do
+      conflicting[p] = true
+    end
+  end
+
+  local files = {}
   for _, line in ipairs(job.stdout) do
     local status, path = line:match("^(%u)%s+(.*)$")
 
     if status and path then
       local oldpath
-
       if status == "R" or status == "C" then
         local from_path, to_path = path:match("^(.-)%s+=>%s+(.-)$")
         oldpath = from_path
         path = to_path or path
       end
 
-      files[#files + 1] = FileEntry.with_layout(opt.default_layout, {
+      if not conflicting[path] then
+        files[#files + 1] = FileEntry.with_layout(opt.default_layout, {
+          adapter = self,
+          path = path,
+          oldpath = oldpath,
+          status = status,
+          stats = {},
+          kind = kind,
+          revs = { a = left, b = right },
+        })
+      end
+    end
+  end
+
+  local conflicts = {}
+  if merge_ctx then
+    -- Fall back to the null tree when `fork_point` yields no base: it keeps
+    -- `revs.d` non-nil so a Diff4 layout renders a well-formed (empty) BASE
+    -- pane instead of crashing in `File.create_buffer` on `rev.type` nil-
+    -- indexing. `JjAdapter:show` handles the null tree specially by
+    -- returning empty content.
+    local base_rev = merge_ctx.base and JjRev(RevType.COMMIT, merge_ctx.base)
+      or JjRev.new_null_tree()
+    for _, path in ipairs(merge_ctx.paths) do
+      conflicts[#conflicts + 1] = FileEntry.with_layout(opt.merge_layout, {
         adapter = self,
         path = path,
-        oldpath = oldpath,
-        status = status,
+        status = "U",
         stats = {},
-        kind = kind,
+        kind = "conflicting",
         revs = {
-          a = left,
-          b = right,
+          a = JjRev(RevType.COMMIT, merge_ctx.ours),
+          b = JjRev(RevType.LOCAL),
+          c = JjRev(RevType.COMMIT, merge_ctx.theirs),
+          d = base_rev,
         },
       })
     end
   end
 
-  callback(nil, files, {})
+  callback(nil, files, conflicts)
 end)
+
+---@return vcs.MergeContext?
+function JjAdapter:get_merge_context()
+  local ctx = self._merge_context_cache
+  if not ctx then
+    return nil
+  end
+
+  -- Fill `ref_names` as nil for now: jj doesn't have git's colon-separated
+  -- decorations format, and looking up bookmarks/tags per side would need
+  -- extra queries. Winbar rendering only fires when `hash` is truthy, so
+  -- returning an empty table for a missing `base` (rather than an empty
+  -- string) matches the git adapter's convention and leaves the default
+  -- winbar in place.
+  return {
+    ours = { hash = ctx.ours, ref_names = nil },
+    theirs = { hash = ctx.theirs, ref_names = nil },
+    base = ctx.base and { hash = ctx.base, ref_names = nil } or {},
+  }
+end
 
 ---@param self JjAdapter
 ---@param left Rev

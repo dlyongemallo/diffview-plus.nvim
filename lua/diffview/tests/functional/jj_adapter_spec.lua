@@ -740,6 +740,287 @@ describe("diffview.vcs.adapters.jj", function()
         end)
       )
     end)
+
+    describe("merge conflict detection", function()
+      -- Build a 2-parent merge with a conflicting file. Returns the change
+      -- ids of the base, ours, and theirs commits.
+      local function make_conflict(filename)
+        filename = filename or "file.txt"
+        repo.write(filename, "line1\n")
+        repo.jj({ "describe", "-m", "initial" })
+        local base = repo.jj({ "log", "-r", "@", "--no-graph", "-T", "change_id.short()" })
+
+        repo.jj({ "new", "-m", "left" })
+        repo.write(filename, "left\n")
+        local ours = repo.jj({ "log", "-r", "@", "--no-graph", "-T", "change_id.short()" })
+
+        repo.jj({ "new", base, "-m", "right" })
+        repo.write(filename, "right\n")
+        local theirs = repo.jj({ "log", "-r", "@", "--no-graph", "-T", "change_id.short()" })
+
+        repo.jj({ "new", ours, theirs, "-m", "merge" })
+
+        return base, ours, theirs
+      end
+
+      it(
+        "detects a 2-sided conflict and returns commit ids for OURS/THEIRS/BASE",
+        helpers.async_test(function()
+          if not jj_available() then
+            pending("jj not installed")
+            return
+          end
+
+          make_conflict()
+          local adapter = repo.adapter()
+
+          local err, ctx = await(adapter:_query_merge_context())
+          assert.is_nil(err)
+          assert.is_not_nil(ctx)
+          assert.same({ "file.txt" }, ctx.paths)
+          -- Commit ids are full 40-char hex.
+          assert.equals(40, #ctx.ours)
+          assert.equals(40, #ctx.theirs)
+          assert.equals(40, ctx.base and #ctx.base or 0)
+          assert.not_equals(ctx.ours, ctx.theirs)
+        end)
+      )
+
+      it(
+        "returns nil when the working copy has no conflicts",
+        helpers.async_test(function()
+          if not jj_available() then
+            pending("jj not installed")
+            return
+          end
+
+          repo.write("file.txt", "clean\n")
+          repo.jj({ "describe", "-m", "clean" })
+
+          local adapter = repo.adapter()
+          local err, ctx = await(adapter:_query_merge_context())
+          assert.is_nil(err)
+          assert.is_nil(ctx)
+        end)
+      )
+
+      it(
+        "routes conflicting paths into the conflicts bucket with the merge layout",
+        helpers.async_test(function()
+          if not jj_available() then
+            pending("jj not installed")
+            return
+          end
+
+          make_conflict()
+
+          local adapter = repo.adapter()
+          local left = adapter.Rev(RevType.COMMIT, adapter.Rev.NULL_TREE_SHA)
+          local right = adapter.Rev(RevType.LOCAL)
+          local args = adapter:rev_to_args(left, right)
+
+          local Diff3Hor = require("diffview.scene.layouts.diff_3_hor").Diff3Hor
+          local err, files, conflicts = await(
+            adapter:tracked_files(
+              left,
+              right,
+              args,
+              "working",
+              { default_layout = Diff2, merge_layout = Diff3Hor }
+            )
+          )
+
+          assert.is_nil(err)
+          for _, f in ipairs(files) do
+            assert.not_equals("file.txt", f.path)
+          end
+          assert.equals(1, #conflicts)
+          assert.equals("file.txt", conflicts[1].path)
+          assert.equals("U", conflicts[1].status)
+          assert.equals("conflicting", conflicts[1].kind)
+        end)
+      )
+
+      it(
+        "populates `get_merge_context` after `tracked_files` from the cache",
+        helpers.async_test(function()
+          if not jj_available() then
+            pending("jj not installed")
+            return
+          end
+
+          make_conflict()
+
+          local adapter = repo.adapter()
+          -- Nothing runs before tracked_files, so the cache is unset.
+          assert.is_nil(adapter:get_merge_context())
+
+          local left = adapter.Rev(RevType.COMMIT, adapter.Rev.NULL_TREE_SHA)
+          local right = adapter.Rev(RevType.LOCAL)
+          local args = adapter:rev_to_args(left, right)
+          local Diff3Hor = require("diffview.scene.layouts.diff_3_hor").Diff3Hor
+
+          await(
+            adapter:tracked_files(
+              left,
+              right,
+              args,
+              "working",
+              { default_layout = Diff2, merge_layout = Diff3Hor }
+            )
+          )
+
+          local ctx = adapter:get_merge_context()
+          assert.is_not_nil(ctx)
+          assert.equals(40, #ctx.ours.hash)
+          assert.equals(40, #ctx.theirs.hash)
+          assert.equals(40, #ctx.base.hash)
+        end)
+      )
+
+      it(
+        "get_merge_context returns nil when there is no conflict",
+        helpers.async_test(function()
+          if not jj_available() then
+            pending("jj not installed")
+            return
+          end
+
+          repo.write("file.txt", "clean\n")
+          repo.jj({ "describe", "-m", "clean" })
+
+          local adapter = repo.adapter()
+          local left = adapter.Rev(RevType.COMMIT, adapter.Rev.NULL_TREE_SHA)
+          local right = adapter.Rev(RevType.LOCAL)
+          local args = adapter:rev_to_args(left, right)
+
+          await(
+            adapter:tracked_files(
+              left,
+              right,
+              args,
+              "working",
+              { default_layout = Diff2, merge_layout = Diff2 }
+            )
+          )
+
+          assert.is_nil(adapter:get_merge_context())
+        end)
+      )
+
+      it(
+        "does not inject working-copy conflicts into a commit-range diff (right != LOCAL)",
+        helpers.async_test(function()
+          if not jj_available() then
+            pending("jj not installed")
+            return
+          end
+
+          make_conflict()
+
+          local adapter = repo.adapter()
+          -- Both endpoints are commits, not LOCAL: this simulates
+          -- `:DiffviewOpen v1.0..v1.1` where the working copy `@` isn't the
+          -- right endpoint.
+          local left = adapter.Rev(RevType.COMMIT, adapter.Rev.NULL_TREE_SHA)
+          local right = adapter.Rev(RevType.COMMIT, adapter.Rev.NULL_TREE_SHA)
+          local Diff3Hor = require("diffview.scene.layouts.diff_3_hor").Diff3Hor
+
+          local err, _, conflicts = await(
+            adapter:tracked_files(
+              left,
+              right,
+              {},
+              "working",
+              { default_layout = Diff2, merge_layout = Diff3Hor }
+            )
+          )
+
+          assert.is_nil(err)
+          assert.equals(0, #conflicts)
+          assert.is_nil(adapter:get_merge_context())
+        end)
+      )
+
+      it(
+        "excludes conflicts outside the requested `path_args` scope",
+        helpers.async_test(function()
+          if not jj_available() then
+            pending("jj not installed")
+            return
+          end
+
+          make_conflict("bar/file.txt")
+
+          local adapter = repo.adapter()
+          adapter.ctx.path_args = { "foo" }
+          local left = adapter.Rev(RevType.COMMIT, adapter.Rev.NULL_TREE_SHA)
+          local right = adapter.Rev(RevType.LOCAL)
+          local args = adapter:rev_to_args(left, right)
+          local Diff3Hor = require("diffview.scene.layouts.diff_3_hor").Diff3Hor
+
+          local err, _, conflicts = await(
+            adapter:tracked_files(
+              left,
+              right,
+              args,
+              "working",
+              { default_layout = Diff2, merge_layout = Diff3Hor }
+            )
+          )
+
+          assert.is_nil(err)
+          assert.equals(0, #conflicts)
+        end)
+      )
+
+      it(
+        "sets `revs.d` to a null-tree Rev rather than nil, so 4-way layouts have a valid BASE pane",
+        helpers.async_test(function()
+          if not jj_available() then
+            pending("jj not installed")
+            return
+          end
+
+          make_conflict()
+
+          local adapter = repo.adapter()
+          -- Force the null-tree branch: pretend fork_point returned nothing.
+          local orig_query = adapter._query_merge_context
+          adapter._query_merge_context = function(self, callback)
+            return orig_query(self, function(err, ctx)
+              if ctx then
+                ctx.base = nil
+              end
+              callback(err, ctx)
+            end)
+          end
+
+          local left = adapter.Rev(RevType.COMMIT, adapter.Rev.NULL_TREE_SHA)
+          local right = adapter.Rev(RevType.LOCAL)
+          local args = adapter:rev_to_args(left, right)
+          local Diff4Mixed = require("diffview.scene.layouts.diff_4_mixed").Diff4Mixed
+
+          local err, _, conflicts = await(
+            adapter:tracked_files(
+              left,
+              right,
+              args,
+              "working",
+              { default_layout = Diff2, merge_layout = Diff4Mixed }
+            )
+          )
+
+          assert.is_nil(err)
+          assert.equals(1, #conflicts)
+          local entry = conflicts[1]
+          local d_rev = entry.layout.d.file.rev
+          assert.is_not_nil(d_rev, "revs.d must not be nil (would crash Diff4 on layout open)")
+          assert.equals(adapter.Rev.NULL_TREE_SHA, d_rev:object_name())
+        end)
+      )
+    end)
+
     describe("file_history_worker", function()
       it(
         "streams one entry per commit",
