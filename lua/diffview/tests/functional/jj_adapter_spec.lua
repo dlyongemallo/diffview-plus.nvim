@@ -996,6 +996,113 @@ describe("diffview.vcs.adapters.jj", function()
       )
     end)
 
+    describe("fh_compute_pushed_set", function()
+      local function init_bare_remote()
+        local remote = vim.fn.tempname()
+        vim.fn.mkdir(remote, "p")
+        run({ "git", "init", "--bare" }, remote)
+        return remote
+      end
+
+      local function head_commit_id()
+        return repo.jj({ "log", "--no-graph", "-T", "commit_id", "-r", "@" })
+      end
+
+      local function push_main_to(remote)
+        repo.jj({ "bookmark", "create", "main", "-r", "@" })
+        repo.jj({ "git", "remote", "add", "origin", remote })
+        repo.jj({ "git", "push", "--remote", "origin", "--bookmark", "main", "--allow-new" })
+      end
+
+      it(
+        "marks ancestors of a pushed remote bookmark as pushed and leaves newer commits unpushed",
+        helpers.async_test(function()
+          if not jj_available() then
+            pending("jj not installed")
+            return
+          end
+
+          local remote = init_bare_remote()
+
+          -- Build a small linear history, bookmark the second commit, push it,
+          -- then add a third commit that's strictly newer than the bookmark.
+          repo.write("a.txt", "alpha\n")
+          repo.jj({ "describe", "-m", "first" })
+          local first = head_commit_id()
+
+          repo.jj({ "new", "-m", "second" })
+          repo.write("a.txt", "beta\n")
+          local second = head_commit_id()
+
+          push_main_to(remote)
+
+          repo.jj({ "new", "-m", "third" })
+          repo.write("a.txt", "gamma\n")
+          local third = head_commit_id()
+
+          local adapter = repo.adapter()
+          local set = adapter:fh_compute_pushed_set({})
+          assert.is_not_nil(set)
+
+          assert.is_true(set[first], "first commit should be reachable from remote_bookmarks()")
+          assert.is_true(set[second], "second commit (the bookmark target) should be pushed")
+          assert.is_nil(set[third], "third commit is past the bookmark and should not be pushed")
+
+          pcall(vim.fn.delete, remote, "rf")
+        end)
+      )
+
+      it(
+        "returns an empty set when the repo has no remotes",
+        helpers.async_test(function()
+          if not jj_available() then
+            pending("jj not installed")
+            return
+          end
+
+          repo.write("a.txt", "alpha\n")
+          repo.jj({ "describe", "-m", "only" })
+
+          local adapter = repo.adapter()
+          local set = adapter:fh_compute_pushed_set({})
+          assert.is_not_nil(set)
+          assert.same({}, set)
+        end)
+      )
+
+      it(
+        "restricts the set to commits touching the given path scope",
+        helpers.async_test(function()
+          if not jj_available() then
+            pending("jj not installed")
+            return
+          end
+
+          local remote = init_bare_remote()
+
+          -- Two pushed commits, each touching a different file. Scoping to
+          -- only one of those paths must drop the unrelated commit.
+          repo.write("kept.txt", "k\n")
+          repo.jj({ "describe", "-m", "touch kept" })
+          local kept_sha = head_commit_id()
+
+          repo.jj({ "new", "-m", "touch other" })
+          repo.write("other.txt", "o\n")
+          local other_sha = head_commit_id()
+
+          push_main_to(remote)
+
+          local adapter = repo.adapter()
+          local set = adapter:fh_compute_pushed_set({ "kept.txt" })
+          assert.is_not_nil(set)
+          assert.is_true(set[kept_sha], "kept.txt's commit should appear in the path-scoped set")
+          assert.is_nil(set[other_sha], "other.txt's commit must not appear in the kept.txt scope")
+
+          pcall(vim.fn.delete, remote, "rf")
+        end)
+      )
+    end)
+
     describe("file_history_dry_run", function()
       it(
         "returns a `file:` hint when a literal path can't parse as a fileset",
@@ -1331,6 +1438,66 @@ describe("diffview.vcs.adapters.jj", function()
       local success, msg = adapter:parse_fh_data(data, {}, state)
       assert.False(success)
       assert.equals("Found no relevant file data with given path args!", msg)
+
+      pcall(vim.fn.delete, repo, "rf")
+    end)
+
+    it("marks the commit as pushed when its hash is in `state.pushed_set`", function()
+      local adapter, repo = make_adapter()
+
+      local pushed_hash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      local state = {
+        path_args = { repo .. "/foo.txt" },
+        scope_args = { "foo.txt" },
+        log_options = {},
+        prepared_log_opts = {},
+        layout_opt = { default_layout = Diff2 },
+        single_file = true,
+        pushed_set = { [pushed_hash] = true },
+      }
+
+      local data = {
+        left_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        right_hash = pushed_hash,
+        namestat = {
+          { status = "M", path = "foo.txt", stats = { additions = 1, deletions = 0 } },
+        },
+      }
+
+      local success, log_entry = adapter:parse_fh_data(data, { hash = pushed_hash }, state)
+      assert.True(success)
+      ---@cast log_entry LogEntry
+      assert.True(log_entry.is_pushed)
+
+      pcall(vim.fn.delete, repo, "rf")
+    end)
+
+    it("marks the commit as not pushed when its hash is absent from `state.pushed_set`", function()
+      local adapter, repo = make_adapter()
+
+      local local_hash = "cccccccccccccccccccccccccccccccccccccccc"
+      local state = {
+        path_args = { repo .. "/foo.txt" },
+        scope_args = { "foo.txt" },
+        log_options = {},
+        prepared_log_opts = {},
+        layout_opt = { default_layout = Diff2 },
+        single_file = true,
+        pushed_set = {},
+      }
+
+      local data = {
+        left_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        right_hash = local_hash,
+        namestat = {
+          { status = "M", path = "foo.txt", stats = { additions = 1, deletions = 0 } },
+        },
+      }
+
+      local success, log_entry = adapter:parse_fh_data(data, { hash = local_hash }, state)
+      assert.True(success)
+      ---@cast log_entry LogEntry
+      assert.False(log_entry.is_pushed)
 
       pcall(vim.fn.delete, repo, "rf")
     end)

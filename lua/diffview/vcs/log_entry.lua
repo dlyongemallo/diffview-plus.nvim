@@ -17,7 +17,7 @@ local M = {}
 ---@field folded boolean
 ---@field nulled boolean
 ---@field is_pushed boolean Whether this commit is reachable from a remote-tracking ref (i.e. has been pushed).
----@field is_merged boolean Whether this commit is reachable from a `main` or `master` branch (local or remote-tracking). The set of trunk branch names is hard-coded; it is not user-configurable. Only populated when `subject_highlight = "merge_aware"` on adapters that compute it (currently Git only); otherwise `false`.
+---@field is_merged boolean Whether this commit is reachable from a `main` or `master` branch (local or remote-tracking). For Git the set of trunk branch names is hard-coded; for jj it is resolved via `trunk()`. Only populated when `subject_highlight = "merge_aware"` on adapters that compute it (Git, jj); otherwise `false`.
 ---@field _pin_overlays? table<string, FileEntry> Cache of transient FileEntry overlays keyed by `pinned_path`, populated when a pinned file isn't touched by this commit.
 local LogEntry = oop.create_class("LogEntry")
 
@@ -44,8 +44,9 @@ function LogEntry:init(opt)
       or false
   end
   -- No decoration-based fallback: "reachable from a main branch" is
-  -- specific to the Git adapter's `merge_aware` precompute. Other adapters
-  -- (or `subject_highlight ~= "merge_aware"`) leave this at false.
+  -- supplied by the adapter's `merge_aware` precompute (Git and jj).
+  -- Other adapters, or `subject_highlight ~= "merge_aware"`, leave this at
+  -- false.
   self.is_merged = opt.is_merged and true or false
   self:update_status()
   self:update_stats()

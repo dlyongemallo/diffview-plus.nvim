@@ -790,6 +790,78 @@ end
 ---@field prepared_log_opts JjAdapter.PreparedLogOpts
 ---@field layout_opt vcs.adapter.LayoutOpt
 ---@field single_file boolean
+---@field pushed_set? table<string, true> Commit hashes reachable from any `remote_bookmarks()` head, restricted to commits touching `path_args`. Absent if not computed (e.g. `subject_highlight = "plain"`) or if the query failed.
+---@field merged_set? table<string, true> Commit hashes reachable from `trunk()`, restricted to commits touching `path_args`. Absent unless `subject_highlight = "merge_aware"` (or the query failed).
+
+---Run `jj log -r <base_revset>` (optionally intersected with `files(...)` when
+---`path_args` is non-empty) and collect the resulting commit hashes into a set.
+---Each path is fileset-escaped via `quote_path_args` so literal paths
+---containing fileset metacharacters (`(`, `|`, ...) don't get parsed as
+---operators. The all-zeros root sha that jj emits when the revset (e.g.
+---`::trunk()`) resolves to nothing is stripped, since downstream comparisons
+---key off real commit hashes only. Returns `nil` if jj exits non-zero.
+---@param self JjAdapter
+---@param base_revset string
+---@param path_args string[]
+---@param label string
+---@return table<string, true>?
+local function fh_collect_revset(self, base_revset, path_args, label)
+  local revset = base_revset
+  if #path_args > 0 then
+    local quoted = quote_path_args(path_args, self.ctx.toplevel)
+    revset = revset .. " & files(" .. table.concat(quoted, " | ") .. ")"
+  end
+
+  local out, code = self:exec_sync({
+    "log",
+    "--no-graph",
+    "-T",
+    [[ commit_id ++ "\n" ]],
+    "-r",
+    revset,
+  }, {
+    cwd = self.ctx.toplevel,
+    log_opt = { label = label },
+  })
+
+  if code ~= 0 then
+    return nil
+  end
+
+  local set = {}
+  for _, sha in ipairs(out) do
+    if #sha > 0 and sha ~= JjRev.NULL_TREE_SHA then
+      set[sha] = true
+    end
+  end
+  return set
+end
+
+---Collect the set of commit hashes reachable from any remote bookmark,
+---restricted to commits modifying `path_args` (or repo-wide when `path_args`
+---is empty). Used by the file-history panel to colour pushed vs unpushed
+---commits when `subject_highlight ~= "plain"`. Returns `nil` if jj exits
+---non-zero so the caller can fall back to the decoration-based heuristic.
+---@param path_args string[]
+---@return table<string, true>?
+function JjAdapter:fh_compute_pushed_set(path_args)
+  return fh_collect_revset(
+    self,
+    "::remote_bookmarks()",
+    path_args,
+    "JjAdapter:fh_compute_pushed_set()"
+  )
+end
+
+---Counterpart to `fh_compute_pushed_set` for the trunk-reachable set. `jj`'s
+---`trunk()` resolves to the head of the default remote's default bookmark
+---(usually `main@origin`), and `::trunk()` is the set of its ancestors. Empty
+---when the repo has no remote/trunk; `nil` on jj failure.
+---@param path_args string[]
+---@return table<string, true>?
+function JjAdapter:fh_compute_merged_set(path_args)
+  return fh_collect_revset(self, "::trunk()", path_args, "JjAdapter:fh_compute_merged_set()")
+end
 
 ---@param log_options JjLogOptions
 ---@param single_file boolean
@@ -1124,6 +1196,29 @@ JjAdapter.file_history_worker = async.void(function(self, out_stream, opt)
     single_file = single_file,
   }
 
+  -- Precompute pushed/merged sets so the panel can colour each commit by
+  -- reachability from a remote/trunk bookmark rather than from `ref_names`
+  -- decoration alone. The template only includes `local_bookmarks` and `tags`
+  -- in `ref_names`, and jj's bookmark format (`main@origin`) doesn't match
+  -- LogEntry's `origin/`/`upstream/`/`remotes/` substring fallback, so without
+  -- the precompute every jj commit would render as `DiffviewCommitLocalOnly`.
+  -- The query is path-scoped via `files(...)`, mirroring git's `rev-list -- <path>`,
+  -- so we don't pay for traversing the whole graph on large repos.
+  local subj_hl = config.get_config().file_history_panel.subject_highlight
+  if subj_hl ~= "plain" then
+    state.pushed_set = self:fh_compute_pushed_set(path_args)
+    -- Only query `::trunk()` when the pushed query succeeded with a non-empty
+    -- result: (a) on jj failure both sets must stay unset together, otherwise
+    -- the panel would render the contradictory "unpushed but merged" combo
+    -- (LogEntry's `ref_names` fallback returns `is_pushed = false` for jj
+    -- since the FH template emits no remote refs); (b) `::trunk()` is a subset
+    -- of `::remote_bookmarks()`, so an empty pushed set implies an empty
+    -- merged set and the second jj invocation would be wasted.
+    if subj_hl == "merge_aware" and state.pushed_set and next(state.pushed_set) then
+      state.merged_set = self:fh_compute_merged_set(path_args)
+    end
+  end
+
   logger:info(
     "[FileHistory] Updating with options:",
     vim.inspect(state.prepared_log_opts, { newline = " ", indent = "" })
@@ -1253,14 +1348,23 @@ function JjAdapter:parse_fh_data(data, commit, state)
     end
   end
 
+  -- `nil` defers to LogEntry's decoration-based fallback; an explicit
+  -- boolean reflects an authoritative answer from the precomputed set.
+  local function lookup(set)
+    return set and set[commit.hash] == true or nil
+  end
+
+  local entry_opt = {
+    path_args = state.path_args,
+    commit = commit,
+    single_file = state.single_file,
+    is_pushed = lookup(state.pushed_set),
+    is_merged = lookup(state.merged_set),
+  }
+
   if files[1] then
-    return true,
-      LogEntry({
-        path_args = state.path_args,
-        commit = commit,
-        files = files,
-        single_file = state.single_file,
-      })
+    entry_opt.files = files
+    return true, LogEntry(entry_opt)
   end
 
   if state.path_args[1] then
@@ -1270,14 +1374,9 @@ function JjAdapter:parse_fh_data(data, commit, state)
 
   -- Commit had no file changes (e.g. empty commit). Return a null entry so
   -- the file-history panel still surfaces it.
-  return true,
-    LogEntry({
-      path_args = state.path_args,
-      commit = commit,
-      single_file = state.single_file,
-      nulled = true,
-      files = { FileEntry.new_null_entry(self) },
-    })
+  entry_opt.files = { FileEntry.new_null_entry(self) }
+  entry_opt.nulled = true
+  return true, LogEntry(entry_opt)
 end
 
 JjAdapter.flags = {
