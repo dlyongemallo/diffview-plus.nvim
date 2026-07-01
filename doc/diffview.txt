@@ -146,6 +146,18 @@ COMMANDS                                        *diffview-commands*
         For more info on these actions, see
         |diffview-actions-conflict_choose|.
 
+        NOTE: Jujutsu's default `conflict-marker-style = "diff"` emits
+        `+++++++` / `%%%%%%%` sections that the parser doesn't recognize,
+        so the marker-based actions (`<leader>c[oOtTbBaA]`, `[x`, `]x`,
+        `d[xX]`) no-op in a Jujutsu repo. Set >toml
+            [ui]
+            conflict-marker-style = "git-diff"
+<
+        in `~/.config/jj/config.toml` and Jujutsu will re-materialize the
+        markers on the next working-copy snapshot. The whole-buffer
+        variants (`<leader>cs*`) read from the side panes directly and
+        work regardless of marker style.
+
         NOTE: The horizontal 3-way diff is only the default layout for the
         merge-tool, but there are multiple variations on the 3-way diff layout
         as well as a 4-way diff, and a single window layout available. The
@@ -269,12 +281,18 @@ COMMANDS                                        *diffview-commands*
               "-c", "DiffviewMergeFiles $output $base $left $right",
             ]
             merge-tool-edits-conflict-markers = true
+            conflict-marker-style = "git-diff"
 <
         With `merge-tool-edits-conflict-markers = true`, Jujutsu writes
         conflict markers into {output} before the editor opens. Saving the
         file (`:wqa`) returns control to Jujutsu, which checks for
         remaining markers to decide whether the conflict is resolved. To
         abort, exit with a non-zero status (`:cq`).
+
+        `conflict-marker-style = "git-diff"` picks the git-style markers
+        the marker-based actions (|diffview-actions-conflict_choose|)
+        parse. Without it, `<leader>c[oOtTbBaA]` no-ops in {output}; the
+        whole-buffer variants (`<leader>cs*`) work either way.
 
                                                 *:DiffviewFileHistory*
 :[range]DiffviewFileHistory [paths] [options]
