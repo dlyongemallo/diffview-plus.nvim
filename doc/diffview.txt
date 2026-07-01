@@ -151,7 +151,7 @@ COMMANDS                                        *diffview-commands*
         so the marker-based actions (`<leader>c[oOtTbBaA]`, `[x`, `]x`,
         `d[xX]`) no-op in a Jujutsu repo. Set >toml
             [ui]
-            conflict-marker-style = "git-diff"
+            conflict-marker-style = "git"
 <
         in `~/.config/jj/config.toml` and Jujutsu will re-materialize the
         markers on the next working-copy snapshot. The whole-buffer
@@ -281,7 +281,7 @@ COMMANDS                                        *diffview-commands*
               "-c", "DiffviewMergeFiles $output $base $left $right",
             ]
             merge-tool-edits-conflict-markers = true
-            conflict-marker-style = "git-diff"
+            conflict-marker-style = "git"
 <
         With `merge-tool-edits-conflict-markers = true`, Jujutsu writes
         conflict markers into {output} before the editor opens. Saving the
@@ -289,7 +289,7 @@ COMMANDS                                        *diffview-commands*
         remaining markers to decide whether the conflict is resolved. To
         abort, exit with a non-zero status (`:cq`).
 
-        `conflict-marker-style = "git-diff"` picks the git-style markers
+        `conflict-marker-style = "git"` picks the git-style diff3 markers
         the marker-based actions (|diffview-actions-conflict_choose|)
         parse. Without it, `<leader>c[oOtTbBaA]` no-ops in {output}; the
         whole-buffer variants (`<leader>cs*`) work either way.
