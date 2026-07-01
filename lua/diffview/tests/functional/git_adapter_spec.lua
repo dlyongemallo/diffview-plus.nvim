@@ -116,6 +116,41 @@ describe("diffview.vcs.adapters.git", function()
         end
       end)
     )
+
+    it(
+      "prepends user-configured global flags from `git_cmd`",
+      test_utils.async_test(function()
+        local repo, adapter = make_repo_and_adapter()
+
+        local ok, err = pcall(function()
+          adapter.get_command = function(_)
+            return { "git", "-C", "/some/path" }
+          end
+          local args = adapter:get_log_args({})
+
+          -- `-C /some/path` must come before `log` so git honours the flag.
+          local log_idx
+          for i, arg in ipairs(args) do
+            if arg == "log" then
+              log_idx = i
+              break
+            end
+          end
+          assert.is_not_nil(log_idx, "get_log_args must include the `log` subcommand")
+          assert.equals("-C", args[log_idx - 2])
+          assert.equals("/some/path", args[log_idx - 1])
+        end)
+
+        vim.schedule(function()
+          pcall(vim.fn.delete, repo, "rf")
+        end)
+        async.await(async.scheduler())
+
+        if not ok then
+          error(err)
+        end
+      end)
+    )
   end)
 
   describe("show_untracked", function()

@@ -322,7 +322,7 @@ function GitAdapter:get_show_args(path, rev)
 end
 
 function GitAdapter:get_log_args(args)
-  return utils.vec_join("log", "--no-show-signature", "--first-parent", "--stat", args)
+  return utils.vec_join(self:args(), "log", "--no-show-signature", "--first-parent", "--stat", args)
 end
 
 function GitAdapter:get_dir(path)
