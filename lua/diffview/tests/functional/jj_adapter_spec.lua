@@ -1329,8 +1329,8 @@ describe("diffview.vcs.adapters.jj", function()
         return remote
       end
 
-      local function head_commit_id()
-        return repo.jj({ "log", "--no-graph", "-T", "commit_id", "-r", "@" })
+      local function head_change_id()
+        return repo.jj({ "log", "--no-graph", "-T", "change_id", "-r", "@" })
       end
 
       local function push_main_to(remote)
@@ -1353,17 +1353,17 @@ describe("diffview.vcs.adapters.jj", function()
           -- then add a third commit that's strictly newer than the bookmark.
           repo.write("a.txt", "alpha\n")
           repo.jj({ "describe", "-m", "first" })
-          local first = head_commit_id()
+          local first = head_change_id()
 
           repo.jj({ "new", "-m", "second" })
           repo.write("a.txt", "beta\n")
-          local second = head_commit_id()
+          local second = head_change_id()
 
           push_main_to(remote)
 
           repo.jj({ "new", "-m", "third" })
           repo.write("a.txt", "gamma\n")
-          local third = head_commit_id()
+          local third = head_change_id()
 
           local adapter = repo.adapter()
           local set = adapter:fh_compute_pushed_set({})
@@ -1409,11 +1409,11 @@ describe("diffview.vcs.adapters.jj", function()
           -- only one of those paths must drop the unrelated commit.
           repo.write("kept.txt", "k\n")
           repo.jj({ "describe", "-m", "touch kept" })
-          local kept_sha = head_commit_id()
+          local kept_sha = head_change_id()
 
           repo.jj({ "new", "-m", "touch other" })
           repo.write("other.txt", "o\n")
-          local other_sha = head_commit_id()
+          local other_sha = head_change_id()
 
           push_main_to(remote)
 
@@ -1541,9 +1541,8 @@ describe("diffview.vcs.adapters.jj", function()
         "A" .. US .. "b.txt" .. US .. "5" .. US .. "0",
       }, RS)
       local data = structure_fh_data(build_line({
-        "deadbeef",
-        "qpzqyx",
-        "cafebabe",
+        "qpzqyxopwsrlkrnpzrtxqvvywmwmylnu", -- change_id
+        "yntnsyqklvpsnmywyvsrppowkmqukpyy", -- parent change_id
         "alice@example.com",
         "1700000000",
         "+0200",
@@ -1554,8 +1553,8 @@ describe("diffview.vcs.adapters.jj", function()
       }))
 
       assert.is_not_nil(data)
-      assert.equals("deadbeef", data.right_hash)
-      assert.equals("cafebabe", data.left_hash)
+      assert.equals("qpzqyxopwsrlkrnpzrtxqvvywmwmylnu", data.right_hash)
+      assert.equals("yntnsyqklvpsnmywyvsrppowkmqukpyy", data.left_hash)
       assert.is_nil(data.merge_hash)
       assert.equals("alice@example.com", data.author)
       assert.equals(1700000000, data.time)
@@ -1569,10 +1568,9 @@ describe("diffview.vcs.adapters.jj", function()
       }, data.namestat)
     end)
 
-    it("returns nil for the root commit (null-tree hash)", function()
+    it("returns nil for the root commit (null change_id)", function()
       local line = build_line({
-        JjRev.NULL_TREE_SHA,
-        "zzzz",
+        JjRev.NULL_CHANGE_ID,
         "",
         "",
         "0",
@@ -1585,11 +1583,10 @@ describe("diffview.vcs.adapters.jj", function()
       assert.is_nil(structure_fh_data(line))
     end)
 
-    it("drops a null-tree parent so the entry is treated as a root-child", function()
+    it("drops the null-root parent so the entry is treated as a root-child", function()
       local line = build_line({
         "abc123",
-        "qpzqyx",
-        JjRev.NULL_TREE_SHA, -- parent is the synthetic root
+        JjRev.NULL_CHANGE_ID, -- parent is the synthetic root
         "",
         "1700000000",
         "+0000",
@@ -1607,7 +1604,6 @@ describe("diffview.vcs.adapters.jj", function()
       -- the previous line-per-field parser.
       local line = build_line({
         "abc",
-        "xyz",
         "parent",
         "", -- no author email
         "1700000000",
@@ -1632,7 +1628,6 @@ describe("diffview.vcs.adapters.jj", function()
     it("yields an empty namestat when the commit has no diff", function()
       local data = structure_fh_data(build_line({
         "abc",
-        "xyz",
         "parent",
         "",
         "1700000000",
@@ -1658,7 +1653,6 @@ describe("diffview.vcs.adapters.jj", function()
       }, RS)
       local data = structure_fh_data(build_line({
         "abc",
-        "xyz",
         "parent",
         "",
         "1700000000",

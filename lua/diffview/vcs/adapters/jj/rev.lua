@@ -7,7 +7,15 @@ local M = {}
 ---@class JjRev : Rev
 local JjRev = oop.create_class("JjRev", Rev)
 
+-- 40-hex-zero commit_id emitted by jj for the null tree (added by the
+-- git-backend for the empty root parent). Used by the null-tree Rev that
+-- backs the left side of an initial-commit diff.
 JjRev.NULL_TREE_SHA = "0000000000000000000000000000000000000000"
+
+-- 32-`z` change_id emitted by jj for the synthetic root commit. Used by the
+-- file-history parser to strip the root from its parent list and from the
+-- pushed/merged reachability sets, which key by change_id.
+JjRev.NULL_CHANGE_ID = "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
 
 ---@param rev_type RevType
 ---@param revision? string|number

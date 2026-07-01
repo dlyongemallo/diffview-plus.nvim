@@ -808,12 +808,12 @@ end
 ---@field merged_set? table<string, true> Commit hashes reachable from `trunk()`, restricted to commits touching `path_args`. Absent unless `subject_highlight = "merge_aware"` (or the query failed).
 
 ---Run `jj log -r <base_revset>` (optionally intersected with `files(...)` when
----`path_args` is non-empty) and collect the resulting commit hashes into a set.
+---`path_args` is non-empty) and collect the resulting change_ids into a set.
 ---Each path is fileset-escaped via `quote_path_args` so literal paths
 ---containing fileset metacharacters (`(`, `|`, ...) don't get parsed as
----operators. The all-zeros root sha that jj emits when the revset (e.g.
+---operators. The all-`z` synthetic root that jj emits when the revset (e.g.
 ---`::trunk()`) resolves to nothing is stripped, since downstream comparisons
----key off real commit hashes only. Returns `nil` if jj exits non-zero.
+---key off real change_ids only. Returns `nil` if jj exits non-zero.
 ---@param self JjAdapter
 ---@param base_revset string
 ---@param path_args string[]
@@ -830,7 +830,7 @@ local function fh_collect_revset(self, base_revset, path_args, label)
     "log",
     "--no-graph",
     "-T",
-    [[ commit_id ++ "\n" ]],
+    [[ change_id ++ "\n" ]],
     "-r",
     revset,
   }, {
@@ -843,9 +843,9 @@ local function fh_collect_revset(self, base_revset, path_args, label)
   end
 
   local set = {}
-  for _, sha in ipairs(out) do
-    if #sha > 0 and sha ~= JjRev.NULL_TREE_SHA then
-      set[sha] = true
+  for _, cid in ipairs(out) do
+    if #cid > 0 and cid ~= JjRev.NULL_CHANGE_ID then
+      set[cid] = true
     end
   end
   return set
@@ -993,22 +993,27 @@ end
 ---files show as `0/0`), so the swap doesn't change which files surface in
 ---the panel.
 ---
+---Uses `change_id` (not `commit_id`) as the primary identifier and for parent
+---links. jj resolves either form as a revset, but change_ids are the stable
+---jj-native identity (they survive amends, rebases, and `describe`) and match
+---what `jj log` shows, so downstream operations (yank-and-paste into `jj -r`,
+---the commit-log panel, single-commit inspection) all round-trip against the
+---identifier the user sees in the panel.
+---
 ---Field order, by index:
----  1. commit_id (full hash)
----  2. change_id
----  3. parent commit_ids (space-separated; empty for the root commit)
----  4. author email
----  5. author timestamp (unix epoch, UTC)
----  6. author timestamp offset (e.g. `+0200`, `-0500`)
----  7. relative date (e.g. `2 minutes ago`)
----  8. ref names (comma-separated local bookmarks + tags)
----  9. subject (first line of description)
----  10. files blob (`\x1e`-separated entries, each
----      `<status>\x1f<path>\x1f<additions>\x1f<deletions>`)
+---  1. change_id (full k-z form)
+---  2. parent change_ids (space-separated; empty for the root commit)
+---  3. author email
+---  4. author timestamp (unix epoch, UTC)
+---  5. author timestamp offset (e.g. `+0200`, `-0500`)
+---  6. relative date (e.g. `2 minutes ago`)
+---  7. ref names (comma-separated local bookmarks + tags)
+---  8. subject (first line of description)
+---  9. files blob (`\x1e`-separated entries, each
+---     `<status>\x1f<path>\x1f<additions>\x1f<deletions>`)
 local FH_TEMPLATE = table.concat({
-  [[ commit_id ++ "\x01" ]],
-  [[ ++ change_id ++ "\x01" ]],
-  [[ ++ parents.map(|p| p.commit_id()).join(" ") ++ "\x01" ]],
+  [[ change_id ++ "\x01" ]],
+  [[ ++ parents.map(|p| p.change_id()).join(" ") ++ "\x01" ]],
   [[ ++ author.email() ++ "\x01" ]],
   [[ ++ author.timestamp().format("%s") ++ "\x01" ]],
   [[ ++ author.timestamp().format("%z") ++ "\x01" ]],
@@ -1027,27 +1032,27 @@ local FH_TEMPLATE = table.concat({
 ---@return table?
 local function structure_fh_data(line)
   local fields = vim.split(line, "\x01", { plain = true })
-  local commit_id = fields[1]
-  if not commit_id or commit_id == "" then
+  local change_id = fields[1]
+  if not change_id or change_id == "" then
     return nil
   end
-  -- The root commit's hash is all zeros and has no description, parents, or
-  -- diff entries. Skip it: it doesn't belong in the file-history list.
-  if commit_id == JjRev.NULL_TREE_SHA then
+  -- The root commit's change_id is all `z`s and has no description, parents,
+  -- or diff entries. Skip it: it doesn't belong in the file-history list.
+  if change_id == JjRev.NULL_CHANGE_ID then
     return nil
   end
 
-  -- Strip empty and null-tree parent slots: empty appears when the parents
-  -- field rendered to `""` (no parents on the root commit); null-tree
-  -- appears when jj surfaces the synthetic zero-hash root as a parent.
+  -- Strip empty and null-root parent slots: empty appears when the parents
+  -- field rendered to `""` (no parents on the root commit); the null change
+  -- appears when jj surfaces the synthetic root as a parent.
   local function clean_parent(p)
-    if not p or p == "" or p == JjRev.NULL_TREE_SHA then
+    if not p or p == "" or p == JjRev.NULL_CHANGE_ID then
       return nil
     end
     return p
   end
 
-  local parents = utils.str_split(fields[3] or "")
+  local parents = utils.str_split(fields[2] or "")
   local left_hash = clean_parent(parents[1])
   local merge_hash = clean_parent(parents[2])
 
@@ -1058,7 +1063,7 @@ local function structure_fh_data(line)
   -- `stats = nil`, matching how the git adapter handles `- -` numstat for
   -- binaries (see `git/parser.lua:parse_namestat_entry`).
   local namestat = {}
-  local files_blob = fields[10] or ""
+  local files_blob = fields[9] or ""
   if files_blob ~= "" then
     for _, entry in ipairs(vim.split(files_blob, "\x1e", { plain = true })) do
       local parts = vim.split(entry, "\x1f", { plain = true })
@@ -1080,15 +1085,15 @@ local function structure_fh_data(line)
   end
 
   return {
-    right_hash = commit_id,
+    right_hash = change_id,
     left_hash = left_hash,
     merge_hash = merge_hash,
-    author = fields[4] or "",
-    time = tonumber(fields[5] or "0") or 0,
-    time_offset = fields[6] or "",
-    rel_date = fields[7] or "",
-    ref_names = fields[8] or "",
-    subject = fields[9] or "",
+    author = fields[3] or "",
+    time = tonumber(fields[4] or "0") or 0,
+    time_offset = fields[5] or "",
+    rel_date = fields[6] or "",
+    ref_names = fields[7] or "",
+    subject = fields[8] or "",
     namestat = namestat,
   }
 end
