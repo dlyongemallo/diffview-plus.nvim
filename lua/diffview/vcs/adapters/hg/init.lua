@@ -158,7 +158,7 @@ function HgAdapter:get_show_args(path, rev)
 end
 
 function HgAdapter:get_log_args(args)
-  return utils.vec_join("log", "--stat", "--rev", args)
+  return utils.vec_join(self:args(), "log", "--stat", "--rev", args)
 end
 
 function HgAdapter:get_dir(path)

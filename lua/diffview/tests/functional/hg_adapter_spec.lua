@@ -86,6 +86,28 @@ describe("diffview.vcs.adapters.hg", function()
     end)
   end)
 
+  describe("get_log_args", function()
+    it("prepends user-configured global flags from `hg_cmd`", function()
+      local adapter = HgAdapter({ toplevel = "/tmp", path_args = {} })
+      adapter.get_command = function(_)
+        return { "hg", "-R", "/some/path" }
+      end
+      local args = adapter:get_log_args({ "abc123" })
+
+      -- `-R /some/path` must come before `log` so hg honours the flag.
+      local log_idx
+      for i, arg in ipairs(args) do
+        if arg == "log" then
+          log_idx = i
+          break
+        end
+      end
+      assert.is_not_nil(log_idx, "get_log_args must include the `log` subcommand")
+      eq("-R", args[log_idx - 2])
+      eq("/some/path", args[log_idx - 1])
+    end)
+  end)
+
   -- ------------------------------------------------------------------
   -- Integration tests: require hg
   -- ------------------------------------------------------------------
