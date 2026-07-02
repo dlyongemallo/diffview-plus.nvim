@@ -245,34 +245,40 @@ describe("diffview.vcs.adapters.jj", function()
   end)
 
   describe("get_log_args()", function()
-    it("returns just `log` when no args are given", function()
+    it("returns `log --no-graph` when no args are given", function()
       local adapter = new_adapter()
 
-      eq({ "log" }, adapter:get_log_args({}))
+      eq({ "log", "--no-graph" }, adapter:get_log_args({}))
     end)
 
     it("wraps a single revset in `-r` so `jj log` reads it as a revision", function()
       local adapter = new_adapter()
 
-      eq({ "log", "-r", "abc123" }, adapter:get_log_args({ "abc123" }))
+      eq({ "log", "--no-graph", "-r", "abc123" }, adapter:get_log_args({ "abc123" }))
     end)
 
     it("wraps an `a..b` range revset in `-r`", function()
       local adapter = new_adapter()
 
-      eq({ "log", "-r", "abc123..def456" }, adapter:get_log_args({ "abc123..def456" }))
+      eq(
+        { "log", "--no-graph", "-r", "abc123..def456" },
+        adapter:get_log_args({ "abc123..def456" })
+      )
     end)
 
     it("wraps each revset when given multiple positional args", function()
       local adapter = new_adapter()
 
-      eq({ "log", "-r", "abc", "-r", "def" }, adapter:get_log_args({ "abc", "def" }))
+      eq({ "log", "--no-graph", "-r", "abc", "-r", "def" }, adapter:get_log_args({ "abc", "def" }))
     end)
 
     it("mixes flags and revsets without re-wrapping flags", function()
       local adapter = new_adapter()
 
-      eq({ "log", "-n10", "-r", "abc123" }, adapter:get_log_args({ "-n10", "abc123" }))
+      eq(
+        { "log", "--no-graph", "-n10", "-r", "abc123" },
+        adapter:get_log_args({ "-n10", "abc123" })
+      )
     end)
 
     it("prepends user-configured global flags from `jj_cmd`", function()
@@ -282,7 +288,7 @@ describe("diffview.vcs.adapters.jj", function()
       end
 
       eq(
-        { "--repository", "/some/path", "log", "-r", "abc123" },
+        { "--repository", "/some/path", "log", "--no-graph", "-r", "abc123" },
         adapter:get_log_args({ "abc123" })
       )
     end)

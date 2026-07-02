@@ -335,8 +335,11 @@ function JjAdapter:get_log_args(args)
   -- revsets `JjRev.to_range` produces) need to go through `-r`. Flags pass
   -- through unchanged. `self:args()` carries any user-configured global
   -- flags (e.g., `--repository`) ahead of the subcommand, matching how
-  -- `get_show_args` builds its invocation.
-  local out = utils.vec_join(self:args(), "log")
+  -- `get_show_args` builds its invocation. `--no-graph` drops the graph
+  -- glyphs: they add no signal in the `CommitLogPanel` (whose buffer is
+  -- `filetype=git` and can't highlight them) and just prefix every line
+  -- with `○`/`│`/`~`.
+  local out = utils.vec_join(self:args(), "log", "--no-graph")
   for _, arg in ipairs(args) do
     if vim.startswith(arg, "-") then
       utils.vec_push(out, arg)
