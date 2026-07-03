@@ -12,6 +12,7 @@ local M = {}
 ---@class CommitLogPanel : Panel
 ---@field adapter VCSAdapter
 ---@field args string[]
+---@field paths? string[]
 ---@field job_out string[]
 local CommitLogPanel = oop.create_class("CommitLogPanel", Panel)
 
@@ -89,15 +90,27 @@ end
 
 ---@param self CommitLogPanel
 ---@param args string|string[]
-CommitLogPanel.update = async.void(function(self, args)
-  args = args or self.args
+---@param paths? string[] # Optional file paths to filter the log by.
+CommitLogPanel.update = async.void(function(self, args, paths)
+  -- A bare `update()` (no explicit args) is treated as a refresh: replay the
+  -- last displayed query so the panel keeps whatever range + path filter was
+  -- set. `paths` is only recorded once we know we're actually rendering new
+  -- content, so a failed or empty log leaves `self.paths` on the last
+  -- successful state — a subsequent refresh replays *that*, not the failed
+  -- filter.
+  if args == nil then
+    args = self.args
+    if paths == nil then
+      paths = self.paths
+    end
+  end
   if type(args) ~= "table" then
     args = { args }
   end
 
   local job = Job({
     command = self.adapter:bin(),
-    args = self.adapter:get_log_args(args),
+    args = self.adapter:get_log_args(args, paths),
     cwd = self.adapter.ctx.toplevel,
   })
 
@@ -115,6 +128,8 @@ CommitLogPanel.update = async.void(function(self, args)
     utils.info("No log content available for these changes.")
     return
   end
+
+  self.paths = paths
 
   if not self:is_open() then
     self:init_buffer()

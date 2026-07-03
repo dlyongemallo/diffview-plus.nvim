@@ -151,6 +151,95 @@ describe("diffview.vcs.adapters.git", function()
         end
       end)
     )
+
+    it(
+      "appends `-- :(literal)<path>` when path filters are given",
+      test_utils.async_test(function()
+        local repo, adapter = make_repo_and_adapter()
+
+        local ok, err = pcall(function()
+          local args = adapter:get_log_args({ "abc..def" }, { "a.txt", "b.txt" })
+
+          -- Paths trail after a lone `--` separator (so git treats them as
+          -- pathspecs, not revs) and are prefixed with `:(literal)` to force
+          -- exact filename match instead of pathspec globbing.
+          local sep_idx
+          for i, arg in ipairs(args) do
+            if arg == "--" then
+              sep_idx = i
+              break
+            end
+          end
+          assert.is_not_nil(sep_idx, "get_log_args must emit `--` before pathspecs")
+          assert.equals(":(literal)a.txt", args[sep_idx + 1])
+          assert.equals(":(literal)b.txt", args[sep_idx + 2])
+          assert.is_nil(args[sep_idx + 3])
+        end)
+
+        vim.schedule(function()
+          pcall(vim.fn.delete, repo, "rf")
+        end)
+        async.await(async.scheduler())
+
+        if not ok then
+          error(err)
+        end
+      end)
+    )
+
+    it(
+      "wraps filenames containing pathspec metacharacters as literal",
+      test_utils.async_test(function()
+        local repo, adapter = make_repo_and_adapter()
+
+        local ok, err = pcall(function()
+          -- Filenames legally containing `*`, `[`, `?`, or a leading `:` would
+          -- otherwise trigger pathspec globbing / magic when passed unquoted.
+          local args = adapter:get_log_args({ "abc..def" }, { "foo*.txt", "[dir]/x.lua", ":odd" })
+
+          local last3 = { args[#args - 2], args[#args - 1], args[#args] }
+          assert.equals(":(literal)foo*.txt", last3[1])
+          assert.equals(":(literal)[dir]/x.lua", last3[2])
+          assert.equals(":(literal):odd", last3[3])
+        end)
+
+        vim.schedule(function()
+          pcall(vim.fn.delete, repo, "rf")
+        end)
+        async.await(async.scheduler())
+
+        if not ok then
+          error(err)
+        end
+      end)
+    )
+
+    it(
+      "does not append `--` when no path filter is given",
+      test_utils.async_test(function()
+        local repo, adapter = make_repo_and_adapter()
+
+        local ok, err = pcall(function()
+          local args_nil = adapter:get_log_args({ "abc..def" })
+          local args_empty = adapter:get_log_args({ "abc..def" }, {})
+
+          for _, args in ipairs({ args_nil, args_empty }) do
+            for _, arg in ipairs(args) do
+              assert.are_not.equal("--", arg)
+            end
+          end
+        end)
+
+        vim.schedule(function()
+          pcall(vim.fn.delete, repo, "rf")
+        end)
+        async.await(async.scheduler())
+
+        if not ok then
+          error(err)
+        end
+      end)
+    )
   end)
 
   describe("show_untracked", function()

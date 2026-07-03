@@ -722,6 +722,7 @@ M.defaults = {
       { "n", "U",              actions.unstage_all,                    { desc = "Unstage all entries" } },
       { "n", "X",              actions.restore_entry,                  { desc = "Restore entry to the state on the left side" } },
       { "n", "L",              actions.open_commit_log,                { desc = "Open the commit log panel" } },
+      { "n", "gL",             actions.open_commit_log_file,           { desc = "Open the commit log panel filtered to the file under the cursor" } },
       { "n", "<C-w>T",        actions.open_in_new_tab,                { desc = "Open diffview in a new tab" } },
       { "n", "i",              actions.listing_style,                  { desc = "Toggle between 'list' and 'tree' views" } },
       { "n", "f",              actions.toggle_flatten_dirs,            { desc = "Flatten empty subdirectories in tree listing style" } },

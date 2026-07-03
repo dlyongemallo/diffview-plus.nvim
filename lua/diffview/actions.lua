@@ -51,6 +51,7 @@ local pl = lazy.access(utils, "path") --[[@as PathLib ]]
 ---@field open_all_folds fun()
 ---@field open_commit_in_browser fun()
 ---@field open_commit_log fun()
+---@field open_commit_log_file fun()
 ---@field open_fold fun()
 ---@field open_in_diffview fun()
 ---@field options fun()
@@ -1231,6 +1232,7 @@ local action_names = {
   "open_all_folds",
   "open_commit_in_browser",
   "open_commit_log",
+  "open_commit_log_file",
   "open_fold",
   "open_in_diffview",
   "options",

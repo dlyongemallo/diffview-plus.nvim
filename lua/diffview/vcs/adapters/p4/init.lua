@@ -225,7 +225,15 @@ end
 
 ---Get arguments for `p4 filelog` or `p4 changes`.
 ---@param args string[] -- This likely contains revision specs or paths
-function P4Adapter:get_log_args(args)
+---@param paths? string[] # Optional file paths to filter the log by. Not
+---   currently honoured; a warning is emitted so `gL` (`open_commit_log_file`)
+---   isn't a silent no-op relative to `L` on a Perforce view.
+function P4Adapter:get_log_args(args, paths)
+  if paths and #paths > 0 then
+    utils.warn(
+      "Path-filtered commit log is not yet supported for Perforce; showing the range's full log."
+    )
+  end
   -- This function seems less used directly. History fetching uses specific commands.
   -- Maybe adapt for `p4 changes`?
   return utils.vec_join("changes", "-l", args) -- Example: get long description for changes

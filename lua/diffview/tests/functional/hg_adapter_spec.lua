@@ -106,6 +106,49 @@ describe("diffview.vcs.adapters.hg", function()
       eq("-R", args[log_idx - 2])
       eq("/some/path", args[log_idx - 1])
     end)
+
+    it("appends `-- path:<path>` when path filters are given", function()
+      local adapter = HgAdapter({ toplevel = "/tmp", path_args = {} })
+      local args = adapter:get_log_args({ "abc..def" }, { "a.txt", "b.txt" })
+
+      -- Paths trail after a lone `--` separator and are prefixed with
+      -- `path:` so hg matches the exact repo-relative path instead of
+      -- interpreting glob metacharacters (`*`, `?`, `[`).
+      local sep_idx
+      for i, arg in ipairs(args) do
+        if arg == "--" then
+          sep_idx = i
+          break
+        end
+      end
+      assert.is_not_nil(sep_idx, "get_log_args must emit `--` before pathspecs")
+      eq("path:a.txt", args[sep_idx + 1])
+      eq("path:b.txt", args[sep_idx + 2])
+      assert.is_nil(args[sep_idx + 3])
+    end)
+
+    it("wraps filenames containing pattern metacharacters as literal", function()
+      local adapter = HgAdapter({ toplevel = "/tmp", path_args = {} })
+      -- Filenames legally containing `*`, `?`, or `[` would otherwise be
+      -- expanded as globs against the working tree by hg.
+      local args = adapter:get_log_args({ "abc..def" }, { "foo*.txt", "[dir]/x.lua" })
+
+      eq("path:foo*.txt", args[#args - 1])
+      eq("path:[dir]/x.lua", args[#args])
+    end)
+
+    it("does not append `--` when no path filter is given", function()
+      local adapter = HgAdapter({ toplevel = "/tmp", path_args = {} })
+
+      for _, args in ipairs({
+        adapter:get_log_args({ "abc..def" }),
+        adapter:get_log_args({ "abc..def" }, {}),
+      }) do
+        for _, arg in ipairs(args) do
+          assert.are_not.equal("--", arg)
+        end
+      end
+    end)
   end)
 
   -- ------------------------------------------------------------------

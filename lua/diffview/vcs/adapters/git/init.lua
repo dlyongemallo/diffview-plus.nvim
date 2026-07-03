@@ -321,8 +321,30 @@ function GitAdapter:get_show_args(path, rev)
   )
 end
 
-function GitAdapter:get_log_args(args)
-  return utils.vec_join(self:args(), "log", "--no-show-signature", "--first-parent", "--stat", args)
+---@param args string[]
+---@param paths? string[] # Optional file paths to filter the log by.
+---@return string[]
+function GitAdapter:get_log_args(args, paths)
+  -- `git log -- <path>` interprets the path as a pathspec, so a literal
+  -- filename with `*`, `?`, `[`, or a leading `:` glob/misfire. `:(literal)`
+  -- pathspec magic (supported since git 1.9) forces exact match, matching
+  -- how the jj adapter's `quote_path_args` handles the same concern.
+  local literal_paths = paths
+      and #paths > 0
+      and vim.tbl_map(function(p)
+        return ":(literal)" .. p
+      end, paths)
+    or nil
+  return utils.vec_join(
+    self:args(),
+    "log",
+    "--no-show-signature",
+    "--first-parent",
+    "--stat",
+    args,
+    literal_paths and "--" or nil,
+    literal_paths
+  )
 end
 
 function GitAdapter:get_dir(path)

@@ -157,8 +157,30 @@ function HgAdapter:get_show_args(path, rev)
   return utils.vec_join(self:args(), "cat", "--rev", rev:object_name(), "--", path)
 end
 
-function HgAdapter:get_log_args(args)
-  return utils.vec_join(self:args(), "log", "--stat", "--rev", args)
+---@param args string[]
+---@param paths? string[] # Optional file paths to filter the log by.
+---@return string[]
+function HgAdapter:get_log_args(args, paths)
+  -- Mercurial treats bare filename arguments as glob patterns by default
+  -- (see `hg help patterns`), so a literal filename with `*`, `?`, or `[`
+  -- would misfire. The `path:` prefix pins the argument to a literal,
+  -- repo-relative path, matching how the git adapter uses `:(literal)` for
+  -- the same concern.
+  local literal_paths = paths
+      and #paths > 0
+      and vim.tbl_map(function(p)
+        return "path:" .. p
+      end, paths)
+    or nil
+  return utils.vec_join(
+    self:args(),
+    "log",
+    "--stat",
+    "--rev",
+    args,
+    literal_paths and "--" or nil,
+    literal_paths
+  )
 end
 
 function HgAdapter:get_dir(path)

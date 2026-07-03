@@ -96,8 +96,10 @@ function NullAdapter:get_show_args(path, rev)
 end
 
 ---@param args table
+---@param paths? string[]
 ---@return string[]
-function NullAdapter:get_log_args(args)
+---@diagnostic disable-next-line: unused-local
+function NullAdapter:get_log_args(args, paths)
   return {}
 end
 

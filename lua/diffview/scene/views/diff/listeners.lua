@@ -302,6 +302,25 @@ return function(view)
         view.commit_log_panel:update(range)
       end
     end,
+    open_commit_log_file = function()
+      if view.left.type == RevType.STAGE and view.right.type == RevType.LOCAL then
+        utils.info("Changes not committed yet. No log available for these changes.")
+        return
+      end
+
+      -- `infer_cur_file()` (no arg) already skips `DirData` items, so any
+      -- non-nil return is a real file entry.
+      local item = view:infer_cur_file()
+      if not item then
+        return
+      end
+
+      local range = view.adapter.Rev.to_range(view.left, view.right)
+
+      if range then
+        view.commit_log_panel:update(range, { item.path })
+      end
+    end,
     toggle_stage_entry = function()
       if not (view.left.type == RevType.STAGE and view.right.type == RevType.LOCAL) then
         return
