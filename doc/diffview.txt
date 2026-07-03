@@ -1906,6 +1906,14 @@ open_commit_log                                 *diffview-actions-open_commit_lo
         Open a panel showing the full commit description of the subject's
         target commit range.
 
+open_commit_log_file                       *diffview-actions-open_commit_log_file*
+        Contexts: `file_panel`
+
+        Like `open_commit_log`, but filter the log to the file under the
+        cursor. Directory entries are skipped. Renames within the range
+        silently truncate history at the rename (git `--follow` is not
+        applied); use |:DiffviewFileHistory| for a rename-aware view.
+
 open_fold                                       *diffview-actions-open_fold*
         Contexts: `file_panel`, `file_history_panel`
 

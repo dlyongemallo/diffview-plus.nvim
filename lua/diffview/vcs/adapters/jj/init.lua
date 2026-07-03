@@ -329,8 +329,9 @@ function JjAdapter:get_show_args(path, rev)
 end
 
 ---@param args string[]
+---@param paths? string[] # Optional file paths to filter the log by.
 ---@return string[]
-function JjAdapter:get_log_args(args)
+function JjAdapter:get_log_args(args, paths)
   -- `jj log` treats positional arguments as filesets, so non-flag args (the
   -- revsets `JjRev.to_range` produces) need to go through `-r`. Flags pass
   -- through unchanged. `self:args()` carries any user-configured global
@@ -338,7 +339,11 @@ function JjAdapter:get_log_args(args)
   -- `get_show_args` builds its invocation. `--no-graph` drops the graph
   -- glyphs: they add no signal in the `CommitLogPanel` (whose buffer is
   -- `filetype=git` and can't highlight them) and just prefix every line
-  -- with `○`/`│`/`~`.
+  -- with `○`/`│`/`~`. `paths` (if given) are passed through
+  -- `quote_path_args` so literal filenames with fileset metacharacters
+  -- (`*`, `~`, `:`, whitespace, ...) match themselves instead of getting
+  -- interpreted as fileset expressions. The `--` separator before them
+  -- matches `list_files_at_head` / `file_history_dry_run`.
   local out = utils.vec_join(self:args(), "log", "--no-graph")
   for _, arg in ipairs(args) do
     if vim.startswith(arg, "-") then
@@ -346,6 +351,10 @@ function JjAdapter:get_log_args(args)
     else
       utils.vec_push(out, "-r", arg)
     end
+  end
+  if paths and #paths > 0 then
+    utils.vec_push(out, "--")
+    utils.vec_extend(out, quote_path_args(paths, self.ctx.toplevel))
   end
   return out
 end

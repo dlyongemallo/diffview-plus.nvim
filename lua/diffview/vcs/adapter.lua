@@ -445,8 +445,10 @@ function VCSAdapter:get_show_args(path, rev)
 end
 
 ---@param args string[]
+---@param paths? string[] # Optional file paths to filter the log by.
 ---@return string[] args to show commit log message
-function VCSAdapter:get_log_args(args)
+---@diagnostic disable-next-line: unused-local
+function VCSAdapter:get_log_args(args, paths)
   oop.abstract_stub()
 end
 

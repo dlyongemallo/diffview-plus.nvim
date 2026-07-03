@@ -292,6 +292,38 @@ describe("diffview.vcs.adapters.jj", function()
         adapter:get_log_args({ "abc123" })
       )
     end)
+
+    it("appends fileset-quoted path filters after `--` and revsets", function()
+      local adapter = new_adapter()
+
+      -- `a.txt` is a literal path with no glob metacharacters, so
+      -- `quote_path_args` wraps it as a plain fileset string literal.
+      -- Positional filesets always follow `--`, which itself follows
+      -- the `-r` revset(s), matching `list_files_at_head` and
+      -- `file_history_dry_run` in the same adapter.
+      eq(
+        { "log", "--no-graph", "-r", "abc123..def456", "--", '"a.txt"' },
+        adapter:get_log_args({ "abc123..def456" }, { "a.txt" })
+      )
+    end)
+
+    it("quotes literal paths containing fileset operators", function()
+      local adapter = new_adapter()
+
+      -- A colon-bearing filename would otherwise look like a fileset
+      -- kind prefix (`foo:bar.txt`) to jj. Quoting forces literal match.
+      eq(
+        { "log", "--no-graph", "-r", "abc123", "--", '"foo:bar.txt"' },
+        adapter:get_log_args({ "abc123" }, { "foo:bar.txt" })
+      )
+    end)
+
+    it("does not append `--` or any path when `paths` is nil or empty", function()
+      local adapter = new_adapter()
+
+      eq({ "log", "--no-graph", "-r", "abc123" }, adapter:get_log_args({ "abc123" }, nil))
+      eq({ "log", "--no-graph", "-r", "abc123" }, adapter:get_log_args({ "abc123" }, {}))
+    end)
   end)
 
   describe("_warn_once()", function()
