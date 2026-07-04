@@ -627,12 +627,9 @@ describe("diffview.vcs.adapters.jj", function()
           "update file",
           adapter:rev_to_panel_name(left:abbrev() .. ".." .. right:abbrev(), left, right)
         )
-
-        local non_parent = adapter.Rev(RevType.COMMIT, string.rep("1", 40))
-        eq("main..@", adapter:rev_to_panel_name("main..@", non_parent, right))
       end)
 
-      it("uses the current change description for a default no-arg diff", function()
+      it("substitutes the description for a LOCAL right (`:DiffviewOpen`)", function()
         if not jj_available() then
           pending("jj not installed")
           return
@@ -642,31 +639,81 @@ describe("diffview.vcs.adapters.jj", function()
         repo.jj({ "describe", "-m", "initial" })
         repo.jj({ "new" })
         repo.write("file.txt", "second\n")
-        repo.jj({ "describe", "-m", "current change" })
+        repo.jj({ "describe", "-m", "working copy change" })
 
         local adapter = repo.adapter()
-        local left, right = adapter:parse_revs(nil, {})
+        local parent_hash =
+          run({ "jj", "show", "-T", "parents.first().commit_id()", "@", "--no-patch" }, repo.dir)
+        local left = adapter.Rev(RevType.COMMIT, parent_hash)
+        local right = adapter.Rev(RevType.LOCAL)
 
-        eq(RevType.COMMIT, left.type)
-        eq(RevType.LOCAL, right.type)
-        eq("current change", adapter:rev_to_panel_name(nil, left, right))
+        eq("working copy change", adapter:rev_to_panel_name(nil, left, right))
       end)
 
-      it("falls back for null-tree ranges", function()
+      it("includes the description for an initial-commit diff (root..@)", function()
         if not jj_available() then
           pending("jj not installed")
           return
         end
 
         repo.write("file.txt", "first\n")
-        repo.jj({ "describe", "-m", "initial" })
+        repo.jj({ "describe", "-m", "the very first change" })
 
         local adapter = repo.adapter()
         local commit_hash = run({ "jj", "show", "-T", "commit_id", "@", "--no-patch" }, repo.dir)
-        local left = adapter.Rev.new_null_tree()
+        -- Initial commit's parent is the synthetic root; its commit_id IS
+        -- `NULL_TREE_SHA`. The description should still surface.
+        local left = adapter.Rev(RevType.COMMIT, adapter.Rev.NULL_TREE_SHA)
         local right = adapter.Rev(RevType.COMMIT, commit_hash)
 
-        eq("root range", adapter:rev_to_panel_name("root range", left, right))
+        eq("the very first change", adapter:rev_to_panel_name(nil, left, right))
+      end)
+
+      it("routes through `parse_revs` for the working-copy `:DiffviewOpen` case", function()
+        if not jj_available() then
+          pending("jj not installed")
+          return
+        end
+
+        -- End-to-end coverage of the primary use case: `parse_revs(nil, {})`
+        -- returns a LOCAL right whose `object_name()` is `"UNKNOWN"`, so
+        -- `single_change_subject` must reach jj via the `@` fallback.
+        repo.write("file.txt", "first\n")
+        repo.jj({ "describe", "-m", "initial" })
+        repo.jj({ "new" })
+        repo.write("file.txt", "second\n")
+        repo.jj({ "describe", "-m", "working copy change" })
+
+        local adapter = repo.adapter()
+        local left, right = adapter:parse_revs(nil, {})
+
+        eq("working copy change", adapter:rev_to_panel_name(nil, left, right))
+      end)
+
+      it("falls back to `rev_arg` when left is not a parent of right", function()
+        if not jj_available() then
+          pending("jj not installed")
+          return
+        end
+
+        -- Three-commit chain so grandparent is a real (non-null-tree) commit.
+        repo.write("file.txt", "first\n")
+        repo.jj({ "describe", "-m", "first" })
+        repo.jj({ "new" })
+        repo.write("file.txt", "second\n")
+        repo.jj({ "describe", "-m", "second" })
+        repo.jj({ "new" })
+        repo.write("file.txt", "third\n")
+        repo.jj({ "describe", "-m", "third" })
+
+        local adapter = repo.adapter()
+        local grandparent_hash =
+          run({ "jj", "show", "-T", "commit_id", "@--", "--no-patch" }, repo.dir)
+        local commit_hash = run({ "jj", "show", "-T", "commit_id", "@", "--no-patch" }, repo.dir)
+        local non_parent = adapter.Rev(RevType.COMMIT, grandparent_hash)
+        local right = adapter.Rev(RevType.COMMIT, commit_hash)
+
+        eq("main..@", adapter:rev_to_panel_name("main..@", non_parent, right))
       end)
     end)
 

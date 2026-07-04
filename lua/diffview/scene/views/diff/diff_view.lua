@@ -31,14 +31,6 @@ local M = {}
 
 local same_rev = lazy.access(rev_lib, "same_rev") --[[@as fun(a: Rev?, b: Rev?): boolean ]]
 
-local function rev_to_panel_name(adapter, rev_arg, left, right)
-  if adapter.rev_to_panel_name then
-    return adapter:rev_to_panel_name(rev_arg, left, right)
-  end
-
-  return rev_arg or adapter:rev_to_pretty_string(left, right)
-end
-
 ---@class DiffViewOptions
 ---@field show_untracked? boolean
 ---@field selected_file? string Path to the preferred initially selected file.
@@ -84,7 +76,7 @@ function DiffView:init(opt)
       self.adapter,
       self.files,
       self.path_args,
-      rev_to_panel_name(self.adapter, self.rev_arg, self.left, self.right)
+      self.adapter:rev_to_panel_name(self.rev_arg, self.left, self.right)
     ),
   })
 
@@ -407,7 +399,7 @@ function DiffView:set_revs(new_rev_arg, opts)
   self.rev_arg = new_rev_arg
   self.left = new_left
   self.right = new_right
-  self.panel.rev_pretty_name = rev_to_panel_name(self.adapter, new_rev_arg, self.left, self.right)
+  self.panel.rev_pretty_name = self.adapter:rev_to_panel_name(new_rev_arg, self.left, self.right)
 
   -- Migrate selection persistence to the new scope key.
   if self._selection_scope_key then
@@ -732,8 +724,13 @@ local update_files_impl = debounce.debounce_trailing(
       perf:lap("updated head rev")
     end
 
-    self.panel.rev_pretty_name =
-      rev_to_panel_name(self.adapter, self.rev_arg, self.left, self.right)
+    -- Recompute the panel label unconditionally: adapter-resolved metadata
+    -- (e.g., a jj change description) can shift even when `left`/`right`
+    -- are structurally unchanged, e.g., `jj describe` on `@` rewrites the
+    -- description but leaves the LOCAL rev's `object_name()` fixed at
+    -- "UNKNOWN", so `refresh_revs` returns nil for that case. Placed after
+    -- the head-rev update so a HEAD move is reflected in the label too.
+    self.panel.rev_pretty_name = self.adapter:rev_to_panel_name(self.rev_arg, self.left, self.right)
     perf:lap("updated rev label")
 
     local index_stat = pl:stat(pl:join(self.adapter.ctx.dir, "index"))

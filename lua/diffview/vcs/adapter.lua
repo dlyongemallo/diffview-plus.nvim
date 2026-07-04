@@ -654,8 +654,8 @@ function VCSAdapter:rev_to_pretty_string(left, right)
 end
 
 ---Convert revs to the display-only label shown in the file panel.
----Unlike rev_to_pretty_string the result need not be parseable as a rev.
----The default prefers the user's rev_arg; adapters may substitute a
+---Unlike `rev_to_pretty_string`, the result need not be parseable as a rev.
+---The default prefers the user's `rev_arg`; adapters may substitute a
 ---friendlier label.
 ---@param rev_arg string?
 ---@param left Rev

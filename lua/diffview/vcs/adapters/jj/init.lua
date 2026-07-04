@@ -576,33 +576,32 @@ end
 ---@param right Rev
 ---@return string|nil
 function JjAdapter:single_change_subject(left, right)
-  if not (left and left.commit and right) then
+  -- Preconditions: `left` is a resolved commit, `right` is either a resolved
+  -- commit or LOCAL (which spells `@` on the CLI); reject the null-tree
+  -- sentinel because `jj show` on it emits a template error.
+  if not left.commit or right.commit == JjRev.NULL_TREE_SHA then
+    return
+  end
+  local right_arg = right.commit or (right.type == RevType.LOCAL and "@")
+  if not right_arg then
     return
   end
 
-  if left.commit == JjRev.NULL_TREE_SHA then
-    return
-  end
-
-  local right_rev
-  if right.type == RevType.LOCAL then
-    right_rev = "@"
-  elseif right.commit and right.commit ~= JjRev.NULL_TREE_SHA then
-    right_rev = right.commit
-  else
-    return
-  end
-
+  -- Emit `parent_hash\ndescription`. `\n` is officially supported in jj
+  -- template strings, and `description.first_line()` guarantees no embedded
+  -- newlines, so the output splits cleanly across two lines. `self:args()`
+  -- carries any user-configured global flags (e.g., `--repository`) ahead
+  -- of the subcommand, matching how `get_show_args`/`get_log_args` build
+  -- their invocations.
   local out, code = self:exec_sync(
     utils.vec_join(
       self:args(),
       "--ignore-working-copy",
-      "log",
-      "--no-graph",
-      "-r",
-      right_rev,
+      "show",
+      "--no-patch",
       "-T",
-      [[parents.first().commit_id() ++ "\x1f" ++ description.first_line() ++ "\n"]]
+      [[parents.first().commit_id() ++ "\n" ++ description.first_line()]],
+      right_arg
     ),
     {
       cwd = self.ctx.toplevel,
@@ -612,19 +611,30 @@ function JjAdapter:single_change_subject(left, right)
     }
   )
 
-  if code ~= 0 or not out[1] then
+  -- Explicit `not out` catches the bootstrap-fail path where `exec_sync`
+  -- returns bare nils; we don't want to rely on `code ~= 0`'s short-circuit
+  -- to shield the following `out[1]` index.
+  if code ~= 0 or not out or not out[1] then
     return
   end
 
-  local parent, subject = vim.trim(out[1]):match("^([^\31]*)\31(.*)$")
+  local parent = vim.trim(out[1])
   if parent ~= left.commit then
     return
   end
 
-  subject = vim.trim(subject or "")
-  return subject ~= "" and subject or nil
+  local subject = vim.trim(out[2] or "")
+  if subject == "" then
+    return
+  end
+
+  return subject
 end
 
+---Convert revs to the display-only label shown in the file panel.
+---Unlike `rev_to_pretty_string`, the result need not be parseable as a rev.
+---For a single-change range, use the change description; otherwise fall
+---back to the caller's `rev_arg` or the default pretty string.
 ---@param rev_arg string?
 ---@param left Rev
 ---@param right Rev
