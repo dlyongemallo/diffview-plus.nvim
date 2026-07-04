@@ -134,6 +134,26 @@ describe("DiffView:set_revs", function()
       eq("ccc333..ddd444", view.panel.rev_pretty_name)
     end)
 
+    it("uses adapter panel labels when available", function()
+      local old_left = make_rev("aaa111")
+      local old_right = make_rev("bbb222")
+      local new_left = make_rev("ccc333")
+      local new_right = make_rev("ddd444")
+
+      local adapter = make_adapter({
+        ["ccc333..ddd444"] = { new_left, new_right },
+      })
+      adapter.rev_to_panel_name = function(_, rev_arg, left, right)
+        return table.concat({ "label", rev_arg, left.commit, right.commit }, ":")
+      end
+
+      local view = make_view(adapter, old_left, old_right, "aaa111..bbb222")
+
+      view:set_revs("ccc333..ddd444")
+
+      eq("label:ccc333..ddd444:ccc333:ddd444", view.panel.rev_pretty_name)
+    end)
+
     it("does nothing when parse_revs fails", function()
       local left = make_rev("aaa111")
       local right = make_rev("bbb222")

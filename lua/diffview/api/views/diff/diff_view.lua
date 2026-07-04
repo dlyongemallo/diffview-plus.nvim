@@ -18,6 +18,14 @@ local logger = DiffviewGlobal.logger
 
 local M = {}
 
+local function rev_to_panel_name(adapter, rev_arg, left, right)
+  if adapter.rev_to_panel_name then
+    return adapter:rev_to_panel_name(rev_arg, left, right)
+  end
+
+  return rev_arg or adapter:rev_to_pretty_string(left, right)
+end
+
 ---@class FileData
 ---@field path string Path relative to git root.
 ---@field oldpath string|nil If the file has been renamed, this should be the old path, oterhwise nil.
@@ -67,7 +75,7 @@ function CDiffView:init(opt)
       adapter,
       self.files,
       self.path_args,
-      self.rev_arg or adapter:rev_to_pretty_string(opt.left, opt.right)
+      rev_to_panel_name(adapter, self.rev_arg, opt.left, opt.right)
     ),
   }))
 

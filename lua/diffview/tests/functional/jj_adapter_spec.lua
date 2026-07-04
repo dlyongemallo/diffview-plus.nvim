@@ -602,6 +602,74 @@ describe("diffview.vcs.adapters.jj", function()
       end
     end)
 
+    describe("rev_to_panel_name", function()
+      it("includes the description for a single-change range", function()
+        if not jj_available() then
+          pending("jj not installed")
+          return
+        end
+
+        repo.write("file.txt", "first\n")
+        repo.jj({ "describe", "-m", "initial" })
+        repo.jj({ "new" })
+        repo.write("file.txt", "second\n")
+        repo.jj({ "describe", "-m", "update file" })
+
+        local adapter = repo.adapter()
+        local parent_hash =
+          run({ "jj", "show", "-T", "parents.first().commit_id()", "@", "--no-patch" }, repo.dir)
+        local commit_hash = run({ "jj", "show", "-T", "commit_id", "@", "--no-patch" }, repo.dir)
+        local left = adapter.Rev(RevType.COMMIT, parent_hash)
+        local right = adapter.Rev(RevType.COMMIT, commit_hash)
+
+        eq(left:abbrev() .. ".." .. right:abbrev(), adapter:rev_to_pretty_string(left, right))
+        eq(
+          "update file",
+          adapter:rev_to_panel_name(left:abbrev() .. ".." .. right:abbrev(), left, right)
+        )
+
+        local non_parent = adapter.Rev(RevType.COMMIT, string.rep("1", 40))
+        eq("main..@", adapter:rev_to_panel_name("main..@", non_parent, right))
+      end)
+
+      it("uses the current change description for a default no-arg diff", function()
+        if not jj_available() then
+          pending("jj not installed")
+          return
+        end
+
+        repo.write("file.txt", "first\n")
+        repo.jj({ "describe", "-m", "initial" })
+        repo.jj({ "new" })
+        repo.write("file.txt", "second\n")
+        repo.jj({ "describe", "-m", "current change" })
+
+        local adapter = repo.adapter()
+        local left, right = adapter:parse_revs(nil, {})
+
+        eq(RevType.COMMIT, left.type)
+        eq(RevType.LOCAL, right.type)
+        eq("current change", adapter:rev_to_panel_name(nil, left, right))
+      end)
+
+      it("falls back for null-tree ranges", function()
+        if not jj_available() then
+          pending("jj not installed")
+          return
+        end
+
+        repo.write("file.txt", "first\n")
+        repo.jj({ "describe", "-m", "initial" })
+
+        local adapter = repo.adapter()
+        local commit_hash = run({ "jj", "show", "-T", "commit_id", "@", "--no-patch" }, repo.dir)
+        local left = adapter.Rev.new_null_tree()
+        local right = adapter.Rev(RevType.COMMIT, commit_hash)
+
+        eq("root range", adapter:rev_to_panel_name("root range", left, right))
+      end)
+    end)
+
     describe("tracked_files", function()
       it(
         "lists modified, added, and deleted files",

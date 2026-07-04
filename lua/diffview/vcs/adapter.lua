@@ -653,6 +653,18 @@ function VCSAdapter:rev_to_pretty_string(left, right)
   return nil
 end
 
+---Convert revs to the display-only label shown in the file panel.
+---Unlike rev_to_pretty_string the result need not be parseable as a rev.
+---The default prefers the user's rev_arg; adapters may substitute a
+---friendlier label.
+---@param rev_arg string?
+---@param left Rev
+---@param right Rev
+---@return string|nil
+function VCSAdapter:rev_to_panel_name(rev_arg, left, right)
+  return rev_arg or self:rev_to_pretty_string(left, right)
+end
+
 ---Check if any of the given revs are LOCAL.
 ---@param left Rev
 ---@param right Rev

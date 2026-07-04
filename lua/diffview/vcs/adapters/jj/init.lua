@@ -572,6 +572,72 @@ function JjAdapter:parse_revs(rev_arg, opt)
   return left, right
 end
 
+---@param left Rev
+---@param right Rev
+---@return string|nil
+function JjAdapter:single_change_subject(left, right)
+  if not (left and left.commit and right) then
+    return
+  end
+
+  if left.commit == JjRev.NULL_TREE_SHA then
+    return
+  end
+
+  local right_rev
+  if right.type == RevType.LOCAL then
+    right_rev = "@"
+  elseif right.commit and right.commit ~= JjRev.NULL_TREE_SHA then
+    right_rev = right.commit
+  else
+    return
+  end
+
+  local out, code = self:exec_sync(
+    utils.vec_join(
+      self:args(),
+      "--ignore-working-copy",
+      "log",
+      "--no-graph",
+      "-r",
+      right_rev,
+      "-T",
+      [[parents.first().commit_id() ++ "\x1f" ++ description.first_line() ++ "\n"]]
+    ),
+    {
+      cwd = self.ctx.toplevel,
+      retry = 2,
+      silent = true,
+      log_opt = { label = "JjAdapter:single_change_subject()" },
+    }
+  )
+
+  if code ~= 0 or not out[1] then
+    return
+  end
+
+  local parent, subject = vim.trim(out[1]):match("^([^\31]*)\31(.*)$")
+  if parent ~= left.commit then
+    return
+  end
+
+  subject = vim.trim(subject or "")
+  return subject ~= "" and subject or nil
+end
+
+---@param rev_arg string?
+---@param left Rev
+---@param right Rev
+---@return string|nil
+function JjAdapter:rev_to_panel_name(rev_arg, left, right)
+  local subject = self:single_change_subject(left, right)
+  if subject then
+    return subject
+  end
+
+  return rev_arg or self:rev_to_pretty_string(left, right)
+end
+
 ---@param rev_arg string?
 ---@param left Rev
 ---@param right Rev
