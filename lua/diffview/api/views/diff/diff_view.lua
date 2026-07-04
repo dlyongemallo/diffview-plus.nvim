@@ -7,7 +7,6 @@ require("diffview.bootstrap")
 local DiffView = lazy.access("diffview.scene.views.diff.diff_view", "DiffView") ---@type DiffView|LazyModule
 local File = lazy.access("diffview.vcs.file", "File") ---@type vcs.File|LazyModule
 local FileEntry = lazy.access("diffview.scene.file_entry", "FileEntry") ---@type FileEntry|LazyModule
-local FilePanel = lazy.access("diffview.scene.views.diff.file_panel", "FilePanel") ---@type FilePanel|LazyModule
 local Rev = lazy.access("diffview.vcs.adapters.git.rev", "GitRev") ---@type GitRev|LazyModule
 local RevType = lazy.access("diffview.vcs.rev", "RevType") ---@type RevType|LazyModule
 local vcs_utils = lazy.require("diffview.vcs") ---@module "diffview.vcs"
@@ -17,14 +16,6 @@ local utils = lazy.require("diffview.utils") ---@module "diffview.utils"
 local logger = DiffviewGlobal.logger
 
 local M = {}
-
-local function rev_to_panel_name(adapter, rev_arg, left, right)
-  if adapter.rev_to_panel_name then
-    return adapter:rev_to_panel_name(rev_arg, left, right)
-  end
-
-  return rev_arg or adapter:rev_to_pretty_string(left, right)
-end
 
 ---@class FileData
 ---@field path string Path relative to git root.
@@ -69,15 +60,7 @@ function CDiffView:init(opt)
   self.fetch_files = opt.update_files
   self.get_file_data = opt.get_file_data
 
-  self:super(vim.tbl_extend("force", opt, {
-    adapter = adapter,
-    panel = FilePanel(
-      adapter,
-      self.files,
-      self.path_args,
-      rev_to_panel_name(adapter, self.rev_arg, opt.left, opt.right)
-    ),
-  }))
+  self:super(vim.tbl_extend("force", opt, { adapter = adapter }))
 
   if type(opt.files) == "table" and not vim.tbl_isempty(opt.files) then
     local files = self:create_file_entries(opt.files)

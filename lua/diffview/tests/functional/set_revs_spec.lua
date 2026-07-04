@@ -62,6 +62,14 @@ describe("DiffView:set_revs", function()
       rev_to_pretty_string = function(_, left, right)
         return (left.commit or "?") .. ".." .. (right.commit or "?")
       end,
+      -- Distinctive sentinel that encodes all three inputs so tests catch
+      -- both a regression that copies raw `rev_arg` into the panel without
+      -- consulting the adapter, and one that forwards the wrong `left`/
+      -- `right` (e.g., pre-update values).
+      rev_to_panel_name = function(self, rev_arg, left, right)
+        return rev_arg
+          and ("PANEL[" .. rev_arg .. "|" .. self:rev_to_pretty_string(left, right) .. "]")
+      end,
       instanceof = function()
         return false
       end,
@@ -131,27 +139,9 @@ describe("DiffView:set_revs", function()
 
       view:set_revs("ccc333..ddd444")
 
-      eq("ccc333..ddd444", view.panel.rev_pretty_name)
-    end)
-
-    it("uses adapter panel labels when available", function()
-      local old_left = make_rev("aaa111")
-      local old_right = make_rev("bbb222")
-      local new_left = make_rev("ccc333")
-      local new_right = make_rev("ddd444")
-
-      local adapter = make_adapter({
-        ["ccc333..ddd444"] = { new_left, new_right },
-      })
-      adapter.rev_to_panel_name = function(_, rev_arg, left, right)
-        return table.concat({ "label", rev_arg, left.commit, right.commit }, ":")
-      end
-
-      local view = make_view(adapter, old_left, old_right, "aaa111..bbb222")
-
-      view:set_revs("ccc333..ddd444")
-
-      eq("label:ccc333..ddd444:ccc333:ddd444", view.panel.rev_pretty_name)
+      -- Prove the adapter method is consulted with the NEW `left`/`right`
+      -- (post-update); the mock's sentinel encodes all three inputs.
+      eq("PANEL[ccc333..ddd444|ccc333..ddd444]", view.panel.rev_pretty_name)
     end)
 
     it("does nothing when parse_revs fails", function()
