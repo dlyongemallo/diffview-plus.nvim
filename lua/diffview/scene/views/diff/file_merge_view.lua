@@ -1,13 +1,13 @@
 local lazy = require("diffview.lazy")
 local oop = require("diffview.oop")
 
-local Diff3Hor = lazy.access("diffview.scene.layouts.diff_3_hor", "Diff3Hor") ---@type Diff3Hor|LazyModule
 local Diff4Mixed = lazy.access("diffview.scene.layouts.diff_4_mixed", "Diff4Mixed") ---@type Diff4Mixed|LazyModule
 local File = lazy.access("diffview.vcs.file", "File") ---@type vcs.File|LazyModule
 local FileEntry = lazy.access("diffview.scene.file_entry", "FileEntry") ---@type FileEntry|LazyModule
 local NullDiffView = lazy.access("diffview.scene.views.diff.null_diff_view", "NullDiffView") ---@type NullDiffView|LazyModule
 local NullRev = lazy.access("diffview.vcs.adapters.null.rev", "NullRev") ---@type NullRev|LazyModule
 local RevType = lazy.access("diffview.vcs.rev", "RevType") ---@type RevType|LazyModule
+local View = lazy.access("diffview.scene.view", "View") ---@type View|LazyModule
 local utils = lazy.require("diffview.utils") ---@module "diffview.utils"
 
 local fmt = string.format
@@ -80,14 +80,15 @@ function FileMergeView:init(opt)
   local a_file = make_file(self.left_path, left_rev, "OURS (Current changes)", self.left_path)
   local b_file = make_file(self.output_path, output_rev, "MERGED (Output)", nil)
   local c_file = make_file(self.right_path, right_rev, "THEIRS (Incoming changes)", self.right_path)
+  local d_file = self.base_path
+      and make_file(self.base_path, base_rev, "BASE (Common ancestor)", self.base_path)
+    or nil
 
-  local layout
-  if self.base_path then
-    local d_file = make_file(self.base_path, base_rev, "BASE (Common ancestor)", self.base_path)
-    layout = Diff4Mixed.__get()({ a = a_file, b = b_file, c = c_file, d = d_file })
-  else
-    layout = Diff3Hor.__get()({ a = a_file, b = b_file, c = c_file })
+  local layout_class = View.__get().get_default_merge_layout()
+  if not d_file and layout_class == Diff4Mixed.__get() then
+    layout_class = View.__get().get_default_diff3()
   end
+  local layout = layout_class({ a = a_file, b = b_file, c = c_file, d = d_file })
 
   local entry = FileEntry({
     adapter = self.adapter,

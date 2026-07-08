@@ -1,14 +1,14 @@
 local lazy = require("diffview.lazy")
 local oop = require("diffview.oop")
 
-local Diff2Hor = lazy.access("diffview.scene.layouts.diff_2_hor", "Diff2Hor") ---@type Diff2Hor|LazyModule
-local Diff3Hor = lazy.access("diffview.scene.layouts.diff_3_hor", "Diff3Hor") ---@type Diff3Hor|LazyModule
+local Diff4Mixed = lazy.access("diffview.scene.layouts.diff_4_mixed", "Diff4Mixed") ---@type Diff4Mixed|LazyModule
 local File = lazy.access("diffview.vcs.file", "File") ---@type vcs.File|LazyModule
 local FileEntry = lazy.access("diffview.scene.file_entry", "FileEntry") ---@type FileEntry|LazyModule
 local NullDiffView = lazy.access("diffview.scene.views.diff.null_diff_view", "NullDiffView") ---@type NullDiffView|LazyModule
 local NullRev = lazy.access("diffview.vcs.adapters.null.rev", "NullRev") ---@type NullRev|LazyModule
 local RevType = lazy.access("diffview.vcs.rev", "RevType") ---@type RevType|LazyModule
 local StandardView = lazy.access("diffview.scene.views.standard.standard_view", "StandardView") ---@type StandardView|LazyModule
+local View = lazy.access("diffview.scene.view", "View") ---@type View|LazyModule
 local utils = lazy.require("diffview.utils") ---@module "diffview.utils"
 
 local fmt = string.format
@@ -214,12 +214,16 @@ function FileDirDiffView:_build_entry(rel, status, a_rev, b_rev, c_rev)
     b_file = make_file(b_abs, b_rev, nil, nil)
   end
 
-  local layout
+  local layout_class
   if three_pane then
-    layout = Diff3Hor.__get()({ a = a_file, b = b_file, c = c_file })
+    layout_class = View.__get().get_default_merge_layout()
+    if layout_class == Diff4Mixed.__get() then
+      layout_class = View.__get().get_default_diff3()
+    end
   else
-    layout = Diff2Hor.__get()({ a = a_file, b = b_file })
+    layout_class = View.__get().get_default_layout()
   end
+  local layout = layout_class({ a = a_file, b = b_file, c = c_file })
 
   return FileEntry({
     adapter = self.adapter,
