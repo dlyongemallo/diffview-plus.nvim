@@ -1,4 +1,5 @@
 local actions = require("diffview.actions")
+local config = require("diffview.config")
 local helpers = require("diffview.tests.helpers")
 local lib = require("diffview.lib")
 local Diff3Hor = require("diffview.scene.layouts.diff_3_hor").Diff3Hor
@@ -65,7 +66,8 @@ describe("diffview.scene.views.diff.file_merge_view", function()
       assert.True(view.files.conflicting[1].layout:instanceof(Diff3Hor))
     end)
 
-    it("uses Diff4Mixed when base is provided", function()
+    it("uses Diff4Mixed when base is provided and config selects Diff4Mixed", function()
+      config.setup({ view = { merge_tool = { layout = "diff4_mixed" } } })
       local adapter = NullAdapter.create({ toplevel = "/tmp" })
       local view = FileMergeView({
         adapter = adapter,
@@ -76,6 +78,39 @@ describe("diffview.scene.views.diff.file_merge_view", function()
       })
 
       assert.True(view.files.conflicting[1].layout:instanceof(Diff4Mixed))
+      config.setup({})
+    end)
+
+    it("downgrades a configured Diff4Mixed to Diff3 default when no base is provided", function()
+      config.setup({ view = { merge_tool = { layout = "diff4_mixed" } } })
+      local Diff3 = require("diffview.scene.layouts.diff_3").Diff3
+      local adapter = NullAdapter.create({ toplevel = "/tmp" })
+      local view = FileMergeView({
+        adapter = adapter,
+        output_path = output_path,
+        left_path = left_path,
+        right_path = right_path,
+      })
+
+      assert.False(view.files.conflicting[1].layout:instanceof(Diff4Mixed))
+      assert.True(view.files.conflicting[1].layout:instanceof(Diff3))
+      config.setup({})
+    end)
+
+    it("honours a Diff3 config even when base is provided (base is dropped)", function()
+      config.setup({ view = { merge_tool = { layout = "diff3_mixed" } } })
+      local Diff3Mixed = require("diffview.scene.layouts.diff_3_mixed").Diff3Mixed
+      local adapter = NullAdapter.create({ toplevel = "/tmp" })
+      local view = FileMergeView({
+        adapter = adapter,
+        output_path = output_path,
+        base_path = base_path,
+        left_path = left_path,
+        right_path = right_path,
+      })
+
+      assert.True(view.files.conflicting[1].layout:instanceof(Diff3Mixed))
+      config.setup({})
     end)
 
     it("populates conflicting (not working) with a single entry", function()
@@ -126,6 +161,7 @@ describe("diffview.scene.views.diff.file_merge_view", function()
     end)
 
     it("binds each window's file to the matching on-disk path", function()
+      config.setup({ view = { merge_tool = { layout = "diff4_mixed" } } })
       local adapter = NullAdapter.create({ toplevel = "/tmp" })
       local view = FileMergeView({
         adapter = adapter,
@@ -140,6 +176,7 @@ describe("diffview.scene.views.diff.file_merge_view", function()
       eq(output_path, layout.b.file.path) -- OUTPUT (editable)
       eq(right_path, layout.c.file.path) -- THEIRS
       eq(base_path, layout.d.file.path) -- BASE
+      config.setup({})
     end)
 
     it("populates `merge_ctx` so `merge_only` keymaps show in the help panel", function()
