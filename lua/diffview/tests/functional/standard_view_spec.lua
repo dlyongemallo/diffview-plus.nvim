@@ -32,6 +32,21 @@ local function drain_remaining_cbs(cbs)
   end
 end
 
+-- Fields consumed by the `swap_cancelled` guard in
+-- `_drain_set_file_pending`. A duck-typed `closing` avoids pulling in
+-- the real `Signal`; setting `tabpage` to the current tabpage keeps the
+-- guard's `nvim_get_current_tabpage()` check quiet.
+local function alive_view_stubs()
+  return {
+    closing = {
+      check = function()
+        return false
+      end,
+    },
+    tabpage = vim.api.nvim_get_current_tabpage(),
+  }
+end
+
 describe("diffview.standard_view panel cursor", function()
   local orig_win_is_valid, orig_win_get_cursor, orig_win_set_cursor
 
@@ -400,19 +415,22 @@ describe("diffview.standard_view _set_file serialization", function()
     local done_future = async.void(function() end)()
 
     ---@diagnostic disable-next-line: missing-fields
-    local view = setmetatable({
-      panel = { render = function() end, redraw = function() end },
-      cur_layout = { detach_files = function() end },
-      emitter = { emit = function() end },
-      cur_entry = { opened = true },
-      nulled = false,
-      _set_file_in_flight = done_future,
-      _set_file_pending = nil,
-      use_entry = async.wrap(function(_, target, cb)
-        table.insert(opened, target)
-        table.insert(cbs, cb)
-      end, 3),
-    }, { __index = StandardView })
+    local view = setmetatable(
+      vim.tbl_extend("error", {
+        panel = { render = function() end, redraw = function() end },
+        cur_layout = { detach_files = function() end },
+        emitter = { emit = function() end },
+        cur_entry = { opened = true },
+        nulled = false,
+        _set_file_in_flight = done_future,
+        _set_file_pending = nil,
+        use_entry = async.wrap(function(_, target, cb)
+          table.insert(opened, target)
+          table.insert(cbs, cb)
+        end, 3),
+      }, alive_view_stubs()),
+      { __index = StandardView }
+    )
 
     local ok, err = pcall(function()
       StandardView._set_file(view, "file_A")
@@ -435,10 +453,13 @@ describe("diffview.standard_view _set_file serialization", function()
 
   it("does not queue when no _set_file is in-flight", function()
     ---@diagnostic disable-next-line: missing-fields
-    local view = setmetatable({
-      _set_file_in_flight = nil,
-      _set_file_pending = nil,
-    }, { __index = StandardView })
+    local view = setmetatable(
+      vim.tbl_extend("error", {
+        _set_file_in_flight = nil,
+        _set_file_pending = nil,
+      }, alive_view_stubs()),
+      { __index = StandardView }
+    )
 
     -- Without an in-flight worker `_set_file` must proceed past the
     -- queuing branch and start a worker. We don't care about the
@@ -464,19 +485,22 @@ describe("diffview.standard_view _set_file serialization", function()
     local cbs = {}
 
     ---@diagnostic disable-next-line: missing-fields
-    local view = setmetatable({
-      panel = { render = function() end, redraw = function() end },
-      cur_layout = { detach_files = function() end },
-      emitter = { emit = function() end },
-      cur_entry = { opened = true },
-      nulled = false,
-      -- Controllable use_entry: record the target and stash its
-      -- callback so the test resumes the worker on demand.
-      use_entry = async.wrap(function(_, target, cb)
-        table.insert(opened, target)
-        table.insert(cbs, cb)
-      end, 3),
-    }, { __index = StandardView })
+    local view = setmetatable(
+      vim.tbl_extend("error", {
+        panel = { render = function() end, redraw = function() end },
+        cur_layout = { detach_files = function() end },
+        emitter = { emit = function() end },
+        cur_entry = { opened = true },
+        nulled = false,
+        -- Controllable use_entry: record the target and stash its
+        -- callback so the test resumes the worker on demand.
+        use_entry = async.wrap(function(_, target, cb)
+          table.insert(opened, target)
+          table.insert(cbs, cb)
+        end, 3),
+      }, alive_view_stubs()),
+      { __index = StandardView }
+    )
 
     local saved_vim_cmd = vim.cmd
     vim.cmd = function() end
@@ -533,6 +557,9 @@ describe("diffview.standard_view _detach_files_for_next", function()
     view.nulled = false
     view._set_file_in_flight = nil
     view._set_file_pending = nil
+    for k, v in pairs(alive_view_stubs()) do
+      view[k] = v
+    end
     view.use_entry = async.wrap(function(_, t, cb)
       table.insert(opened, t)
       table.insert(cbs, cb)
