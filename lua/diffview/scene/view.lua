@@ -188,13 +188,11 @@ function View:open()
   apply_diffopt(self)
   DiffviewGlobal.emitter:emit("view_opened", self)
   DiffviewGlobal.emitter:emit("view_enter", self)
-  -- Drain `post_open`'s scheduled entry setup before returning. Otherwise
-  -- typeahead after the command can reach a buffer whose diffview keymap
-  -- hasn't attached yet and falls through to native `:diffget` (see #262).
-  vim.wait(2000, function()
-    ---@diagnostic disable-next-line: undefined-field
-    return self.ready and self.cur_entry ~= nil
-  end)
+  -- No wait guard here: `init_layout` synchronously drops `File.NULL_FILE`
+  -- into every diffview window, and `_get_null_buffer` installs buffer-local
+  -- `<Nop>` mappings for `do`/`dp`/`[1-3]do`. Typeahead landing on the
+  -- placeholder before the real diff buffer is swapped in can no longer fall
+  -- through to native `:diffget` (see #262).
 end
 
 ---@param opts? diffview.View.CloseOpts # Forwarded to subclass overrides; ignored at the base level.
