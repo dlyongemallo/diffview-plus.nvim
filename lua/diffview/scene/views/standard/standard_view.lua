@@ -13,7 +13,7 @@ local oop = lazy.require("diffview.oop") ---@module "diffview.oop"
 local utils = lazy.require("diffview.utils") ---@module "diffview.utils"
 
 local api = vim.api
-local await = async.await
+local await, pawait = async.await, async.pawait
 
 local M = {}
 
@@ -200,12 +200,22 @@ function StandardView:ensure_layout()
   end
 end
 
+---Clone `layout`, cache the clone in `self.layouts`, and attach a
+---`pivot_producer` to it — without touching `self.cur_layout`. Reuses
+---an existing cache entry for the same class so pinned variants keep
+---their file identities across swaps.
 ---@param layout Layout
-function StandardView:use_layout(layout)
-  self.cur_layout = layout:clone()
-  self.layouts[layout.class] = self.cur_layout
+---@return Layout
+function StandardView:_stage_layout(layout)
+  local staged = self.layouts[layout.class]
+  if staged then
+    return staged
+  end
 
-  self.cur_layout.pivot_producer = function()
+  staged = layout:clone()
+  self.layouts[layout.class] = staged
+
+  staged.pivot_producer = function()
     local was_open = self.panel:is_open()
     local was_only_win = was_open and #utils.tabpage_list_normal_wins(self.tabpage) == 1
     self.panel:close()
@@ -224,6 +234,13 @@ function StandardView:use_layout(layout)
 
     return pivot
   end
+
+  return staged
+end
+
+---@param layout Layout
+function StandardView:use_layout(layout)
+  self.cur_layout = self:_stage_layout(layout)
 end
 
 ---Save the panel cursor position for later restoration.
@@ -288,20 +305,42 @@ StandardView.use_entry = async.void(function(self, entry)
     self.cur_layout.emitter = entry.layout.emitter
     await(self.cur_layout:use_entry(entry))
   else
-    if self.layouts[entry.layout.class] then
-      self.cur_layout = self.layouts[entry.layout.class]
-      self.cur_layout.emitter = entry.layout.emitter
-    else
-      self:use_layout(entry.layout)
-      self.cur_layout.emitter = entry.layout.emitter
+    -- Atomic swap: `self.cur_layout` must always expose a valid,
+    -- fully-created layout, since observers can read it at any point
+    -- (notably `update_files_impl`'s debounced `ensure_layout` and any
+    -- autocmd that `Window:close` fires synchronously during teardown).
+    -- So: build the incoming layout off to the side, publish it only
+    -- once `create` has resolved, and destroy the old one only after
+    -- publishing. A concurrent `Layout:ensure` then never sees a
+    -- half-built or half-destroyed layout and cannot trip `recover`
+    -- against one.
+    --
+    -- Destroying the old layout AFTER the new create also lets
+    -- `find_pivot` split one of the old windows for the new layout's
+    -- pivot, anchoring the new windows inside the current diff area
+    -- rather than the null split `Panel:close` fabricates on a
+    -- last-window close.
+    local new_layout = self:_stage_layout(entry.layout)
+    new_layout.emitter = entry.layout.emitter
+
+    -- Guard the staging phase: if `use_entry` or `create` errors
+    -- part-way through, any windows `create_wins` already made would
+    -- linger as orphans and the half-built `new_layout` would stay in
+    -- `self.layouts` for the next swap to reuse. Tear it down and drop
+    -- the cache entry before rethrowing so `_stage_layout` re-clones
+    -- next time.
+    local ok, err = pawait(async.void(function()
+      await(new_layout:use_entry(entry))
+      await(new_layout:create())
+    end))
+    if not ok then
+      new_layout:destroy()
+      self.layouts[entry.layout.class] = nil
+      error(err)
     end
 
-    await(self.cur_layout:use_entry(entry))
-    local future = self.cur_layout:create()
+    self.cur_layout = new_layout
     old_layout:destroy()
-
-    -- Wait for files to be created + opened
-    await(future)
 
     if not vim.o.equalalways then
       vim.cmd("wincmd =")
