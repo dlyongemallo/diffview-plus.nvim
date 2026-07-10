@@ -287,11 +287,21 @@ describe("diffview.scene.views.diff.file_merge_view", function()
     end)
   end)
 
-  -- Regression: `View:open` waits for the scheduled entry setup so
-  -- typeahead after `:DiffviewMergeFiles` reaches the real MERGED buffer
-  -- with its `Ndo` keymap attached (issue #262).
-  describe("FileMergeView:open (issue #262 race guard)", function()
-    it("populates `cur_entry` and `ready` before returning", function()
+  -- Regression: after `:DiffviewMergeFiles`, every diff-layout window
+  -- must have `do` mapped away from native `:diffget` so typeahead can't
+  -- fall through to E99/E101 (issue #262). The invariant lives on
+  -- `File.NULL_FILE`, which `init_layout` installs synchronously.
+  describe("FileMergeView:open (issue #262)", function()
+    local function buf_do_rhs(bufnr)
+      for _, m in ipairs(vim.api.nvim_buf_get_keymap(bufnr, "n")) do
+        if m.lhs == "do" then
+          return m.rhs
+        end
+      end
+      return nil
+    end
+
+    it("guards `do` on every diff-layout window before returning", function()
       local output = tmpfile("<<<<<<< HEAD\nc\n=======\ne\n>>>>>>> what\n")
       local base = tmpfile("a\n")
       local left = tmpfile("c\n")
@@ -301,8 +311,13 @@ describe("diffview.scene.views.diff.file_merge_view", function()
       assert.is_not_nil(view)
       view:open()
 
-      assert.is_true(view.ready)
-      assert.is_not_nil(view.cur_entry)
+      assert.is_truthy(view.cur_layout)
+      assert.is_true(#view.cur_layout.windows > 0)
+      for _, win in ipairs(view.cur_layout.windows) do
+        assert.is_true(win:is_valid())
+        local bufnr = vim.api.nvim_win_get_buf(win.id)
+        assert.are.equal("", buf_do_rhs(bufnr))
+      end
 
       helpers.close_view(view)
       os.remove(output)

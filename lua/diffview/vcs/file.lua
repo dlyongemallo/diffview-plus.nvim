@@ -726,6 +726,25 @@ function File.safe_delete_buf(bufnr)
   pcall(api.nvim_buf_delete, bufnr, { force = true })
 end
 
+-- Vim built-in diff keys that need to be swallowed while the null placeholder
+-- is visible. Diff2 layouts use `do`/`dp`; Diff3/Diff4 layers `[1-3]do` on top
+-- via the layout keymaps. Guarding them all keeps typeahead like `2do` from
+-- resolving to native `:diffget` on an empty buffer between `init_layout` and
+-- the first real `set_file` (see #262).
+local NULL_GUARD_KEYS = { "do", "dp", "1do", "2do", "3do" }
+
+---@param bufnr integer
+local function install_null_buffer_guards(bufnr)
+  for _, lhs in ipairs(NULL_GUARD_KEYS) do
+    vim.keymap.set({ "n", "x" }, lhs, "<Nop>", {
+      buffer = bufnr,
+      nowait = true,
+      silent = true,
+      desc = "diffview: swallow typeahead on the null placeholder",
+    })
+  end
+end
+
 ---@static Get the bufid of the null buffer. Create it if it's not loaded.
 ---@return integer
 function File._get_null_buffer()
@@ -758,6 +777,11 @@ function File._get_null_buffer()
 
     File.NULL_FILE.bufnr = bn
   end
+
+  -- Re-install on every call so an adopted buffer whose earlier session was
+  -- torn down (and whose buffer-local maps went with it) still ends up
+  -- guarded. `vim.keymap.set` is idempotent for the same `{ mode, lhs, opts }`.
+  install_null_buffer_guards(File.NULL_FILE.bufnr)
 
   return File.NULL_FILE.bufnr
 end
