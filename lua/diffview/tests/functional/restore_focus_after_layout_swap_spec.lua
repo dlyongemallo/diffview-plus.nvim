@@ -8,9 +8,10 @@ local Diff2Hor = require("diffview.scene.layouts.diff_2_hor").Diff2Hor
 local EventEmitter = require("diffview.events").EventEmitter
 local GitAdapter = require("diffview.vcs.adapters.git").GitAdapter
 local GitRev = require("diffview.vcs.adapters.git.rev").GitRev
+local Layout = require("diffview.scene.layout").Layout
 local RevType = require("diffview.vcs.rev").RevType
 
-local await = async.await
+local await, pawait = async.await, async.pawait
 local eq = helpers.eq
 local run = helpers.run
 local cleanup_repo = helpers.cleanup_repo
@@ -141,6 +142,99 @@ describe("StandardView.use_entry layout-swap focus (integration)", function()
           view.panel:is_focused(),
           "panel focus was lost across the Diff2Hor -> Diff1Raw layout swap"
         )
+      end)
+
+      close_view(view)
+      cleanup_repo(repo)
+      if not ok then
+        error(err)
+      end
+    end)
+  )
+
+  -- The atomic-swap invariant: `self.cur_layout` always exposes a
+  -- valid layout to observers throughout the swap — the outgoing one
+  -- until `create` resolves, then the fully-created new one while
+  -- the old windows are torn down. A concurrent `ensure_layout` (the
+  -- debounced `update_files_impl` firing mid-swap, or any autocmd
+  -- that window teardown fires synchronously) therefore never sees a
+  -- half-built layout and cannot trip `Layout:recover`.
+  it(
+    "keeps cur_layout on a valid layout throughout the swap",
+    helpers.async_test(function()
+      config.setup({
+        use_icons = false,
+        view = {
+          default = { layout = "diff2_horizontal", focus_diff = false },
+          one_sided_layout = "raw",
+        },
+      })
+
+      local repo = make_repo()
+      local view
+
+      local ok, err = pcall(function()
+        local adapter = GitAdapter({ toplevel = repo, cpath = repo, path_args = {} })
+        view = DiffView({
+          adapter = adapter,
+          rev_arg = nil,
+          path_args = {},
+          left = GitRev(RevType.STAGE, 0),
+          right = GitRev(RevType.LOCAL),
+          options = { show_untracked = true },
+        })
+        assert.is_true(view:is_valid())
+
+        view:open()
+        local loaded = vim.wait(3000, function()
+          return view.initialized
+        end, 10)
+        assert.is_true(loaded, "view did not finish loading within 3s")
+
+        if view._set_file_in_flight then
+          await(view._set_file_in_flight)
+        end
+
+        local modified_entry, raw_entry
+        for _, f in view.files:iter() do
+          if f.path == "existing.txt" then
+            modified_entry = f
+          elseif f.path == "newfile.txt" then
+            raw_entry = f
+          end
+        end
+
+        -- Land on the Diff2Hor entry as the swap's outgoing layout.
+        await(view:set_file(modified_entry, false, false))
+        eq(Diff2Hor, view.cur_layout.class)
+
+        -- Spy on the invariant. Sample `self.cur_layout:is_valid()` on
+        -- every `Layout:destroy` entry that fires during the swap: at
+        -- each of those points the view must still expose a valid
+        -- layout to any observer (concurrent `ensure_layout`, autocmds
+        -- that window teardown fires synchronously, etc.). The specific
+        -- identity of that layout — outgoing vs. freshly-created —
+        -- doesn't matter to the invariant; only its validity does.
+        local snapshots = {}
+        local orig_destroy = Layout.destroy
+        Layout.destroy = function(layout_self)
+          snapshots[#snapshots + 1] = view.cur_layout and view.cur_layout:is_valid()
+          orig_destroy(layout_self)
+        end
+
+        local swap_ok, swap_err = pawait(view.set_file, view, raw_entry, false, false)
+        Layout.destroy = orig_destroy
+        assert(swap_ok, swap_err)
+
+        eq(Diff1Raw, view.cur_layout.class)
+
+        -- At least one destroy fires during the swap (the outgoing
+        -- Diff2Hor). Every snapshot taken while the swap was in
+        -- flight must show a valid `cur_layout`.
+        assert.is_true(#snapshots > 0, "expected at least one Layout:destroy call during the swap")
+        for i, valid in ipairs(snapshots) do
+          assert.is_true(valid, "cur_layout was invalid at destroy call #" .. i)
+        end
       end)
 
       close_view(view)

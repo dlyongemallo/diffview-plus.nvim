@@ -370,7 +370,11 @@ function Layout:is_nulled()
   return true
 end
 
----Validate the layout and recover if necessary.
+---Validate the layout and recover if necessary. Recover is only ever
+---triggered against the `StandardView.cur_layout`, and `use_entry`
+---publishes a new layout to `cur_layout` only AFTER its `create` future
+---has fully resolved (and the old layout has been destroyed), so a
+---call to `ensure` cannot land on a layout that is still mid-swap.
 function Layout:ensure()
   local state = self:validate()
 
