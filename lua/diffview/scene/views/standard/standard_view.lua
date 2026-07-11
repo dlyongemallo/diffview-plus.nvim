@@ -17,6 +17,17 @@ local await, pawait = async.await, async.pawait
 
 local M = {}
 
+---Predicate matching `DiffView.update_files_impl`'s cancellation guard.
+---True when the view is closing or the user has navigated to another
+---tabpage while a yielded coroutine was suspended. Keep this identical
+---to the inline check in `update_files_impl` so the two async pipelines
+---can't drift apart on the definition.
+---@param view StandardView
+---@return boolean
+local function swap_cancelled(view)
+  return view.closing:check() or view.tabpage ~= api.nvim_get_current_tabpage()
+end
+
 ---@class StandardView : View
 ---@field panel Panel
 ---@field winopts table
@@ -298,12 +309,27 @@ StandardView.use_entry = async.void(function(self, entry)
   end
 
   local old_layout = self.cur_layout
+  local old_entry = self.cur_entry
   local panel_was_focused = self.panel:is_focused()
   self.cur_entry = entry
 
   if entry.layout.class == self.cur_layout.class then
     self.cur_layout.emitter = entry.layout.emitter
     await(self.cur_layout:use_entry(entry))
+
+    -- Bail if the view closed or the user navigated to a different
+    -- tabpage while `use_entry` was yielded. The caller (the drain
+    -- loop) also re-checks after this returns; the guard here keeps
+    -- any post-await work in the same-class branch from touching
+    -- editor state that no longer belongs to us.
+    --
+    -- Do NOT revert `cur_entry` here: `Layout.use_entry` binds
+    -- `win.file` for the new entry synchronously (before its yield),
+    -- so `cur_layout` is already showing the new file; keeping
+    -- `cur_entry` advanced preserves consistency.
+    if swap_cancelled(self) then
+      return
+    end
   else
     -- Atomic swap: `self.cur_layout` must always expose a valid,
     -- fully-created layout, since observers can read it at any point
@@ -329,13 +355,53 @@ StandardView.use_entry = async.void(function(self, entry)
     -- `self.layouts` for the next swap to reuse. Tear it down and drop
     -- the cache entry before rethrowing so `_stage_layout` re-clones
     -- next time.
-    local ok, err = pawait(async.void(function()
-      await(new_layout:use_entry(entry))
-      await(new_layout:create())
-    end))
-    if not ok then
+    --
+    -- Cancellation cleanup (also below) mirrors the error path:
+    -- destroy the staged layout and drop the cache entry so the next
+    -- real swap re-clones from `entry.layout` instead of inheriting
+    -- whatever partial state the cancelled attempt left behind.
+    -- Deliberately does NOT destroy `old_layout`: if `closing` fired,
+    -- `DiffView:close` is already tearing down the diff tabpage; if
+    -- only `tabpage` flipped, the diff tabpage is still there and its
+    -- outgoing layout should stay intact until the user comes back.
+    -- Also skips the post-swap `wincmd =` / focus restore, which would
+    -- otherwise run against someone else's tabpage.
+    -- Also reverts `self.cur_entry`: neither the cancellation nor the
+    -- error path publishes `new_layout`, so `cur_layout` is still the
+    -- outgoing one and `cur_entry` must follow it, or later actions
+    -- (e.g., `view.cur_entry.layout:files()`) would act on the wrong
+    -- entry.
+    local function stage_cleanup()
       new_layout:destroy()
       self.layouts[entry.layout.class] = nil
+      self.cur_entry = old_entry
+    end
+
+    -- Check between `use_entry` and `create`. `Layout.use_entry` on a
+    -- cached layout with still-valid windows takes the
+    -- `await(open_files())` branch and yields; the pre-`create` guard
+    -- catches a close/tabnew that lands during that yield so
+    -- `create()` never runs `pivot_producer` / `create_wins` against
+    -- the wrong tabpage. Cancellation is checked before the error
+    -- path so a close that races with a `pawait` failure is swallowed
+    -- silently (the user asked for the close, not for an error).
+    local ok, err = pawait(new_layout:use_entry(entry))
+    if swap_cancelled(self) then
+      stage_cleanup()
+      return
+    end
+    if not ok then
+      stage_cleanup()
+      error(err)
+    end
+
+    ok, err = pawait(new_layout:create())
+    if swap_cancelled(self) then
+      stage_cleanup()
+      return
+    end
+    if not ok then
+      stage_cleanup()
       error(err)
     end
 
@@ -382,6 +448,14 @@ end
 ---@param self StandardView
 StandardView._drain_set_file_pending = async.void(function(self)
   while self._set_file_pending do
+    -- Bail if the view closed while a previous drain iteration was
+    -- suspended. Supersession itself is already handled by the loop
+    -- re-reading `_set_file_pending` at the top; this predicate only
+    -- covers the close-during-supersession case.
+    if swap_cancelled(self) then
+      break
+    end
+
     local target = self._set_file_pending --[[@as FileEntry]]
     self._set_file_pending = nil
 
@@ -402,6 +476,15 @@ StandardView._drain_set_file_pending = async.void(function(self)
     -- pairs, permanently freezing the editor. Neovim's built-in
     -- foldmethod=diff already folds unchanged regions in the diff.
     -- See: sindrets/diffview.nvim#552
+
+    -- The critical guard: `use_entry` yields on file loads and git
+    -- blob fetches, so the view may have closed or the user may have
+    -- switched tabpages by the time it returns. Skip `file_open_post`
+    -- (listeners assume a live view) and the `file_open_new` emit
+    -- (which would mark a superseded entry as opened) in that case.
+    if swap_cancelled(self) then
+      break
+    end
 
     self.emitter:emit("file_open_post", target, cur_entry)
 
