@@ -340,9 +340,14 @@ known issues and workarounds:
           -- The group name is an internal detail of nvim-treesitter-context
           -- and may differ across versions; verify it matches your install
           -- or omit it to fire all BufReadPost handlers.
+          -- `modeline = false` prevents `nvim_exec_autocmds`'s default
+          -- post-autocmd modeline pass from running `:set` commands (e.g.
+          -- `fileencoding`) against the diffview buffer, which is
+          -- non-modifiable and would raise E21.
           pcall(vim.api.nvim_exec_autocmds, "BufReadPost", {
             buffer = bufnr,
             group = "treesitter_context_update",
+            modeline = false,
           })
         end,
         view_closed = function()
