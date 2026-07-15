@@ -270,6 +270,39 @@ function Panel:is_focused()
   return self:is_open() and api.nvim_get_current_win() == self.winid
 end
 
+---Resolve the window to read the panel cursor from. Returns the current
+---window if it's displaying the panel buffer (e.g., the panel buffer was
+---zoomed into a floating window by `Snacks.zen.zoom()` or opened in a
+---secondary split), otherwise falls back to `self.winid`. Callers should
+---guard with `is_open()` so that the fallback is a valid window.
+---@return integer
+function Panel:cursor_winid()
+  local cur = api.nvim_get_current_win()
+  if self.bufid and api.nvim_win_get_buf(cur) == self.bufid then
+    return cur
+  end
+  return self.winid --[[@as integer]]
+end
+
+---Windows to broadcast cursor writes to: every window currently displaying
+---the panel buffer. Broadcasting keeps the primary panel window's cursor in
+---sync when the user navigates from a secondary window (e.g., a
+---`Snacks.zen.zoom()` float), so subsequent reads via `cursor_winid()` don't
+---return a stale position after the secondary window closes. It also keeps
+---unfocused secondary windows in sync when a background refresh (e.g.,
+---`highlight_file` from a status update) fires while focus is elsewhere.
+---
+---`self.winid` is intentionally NOT used as a fallback: if it's still valid
+---but the user has replaced its buffer (e.g., via `:e`), broadcasting there
+---would silently move the cursor in an unrelated buffer.
+---@return integer[]
+function Panel:cursor_winids()
+  if not self.bufid then
+    return {}
+  end
+  return vim.fn.win_findbuf(self.bufid)
+end
+
 ---@param no_open? boolean Don't open the panel if it's closed.
 function Panel:focus(no_open)
   if self:is_open() then

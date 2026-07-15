@@ -257,7 +257,7 @@ function FilePanel:get_item_at_cursor()
     return
   end
 
-  local line = api.nvim_win_get_cursor(self.winid)[1]
+  local line = api.nvim_win_get_cursor(self:cursor_winid())[1]
   return self:get_item_at_line(line)
 end
 
@@ -272,7 +272,7 @@ function FilePanel:get_dir_at_cursor()
     return
   end
 
-  local line = api.nvim_win_get_cursor(self.winid)[1]
+  local line = api.nvim_win_get_cursor(self:cursor_winid())[1]
   local comp = self.components.comp:get_comp_on_line(line)
 
   if not comp then
@@ -293,6 +293,7 @@ function FilePanel:highlight_file(file)
     return
   end
 
+  local target_row
   if self.listing_style == "list" then
     for _, file_list in ipairs({
       self.components.conflicting.files,
@@ -301,7 +302,7 @@ function FilePanel:highlight_file(file)
     }) do
       for _, comp_struct in ipairs(file_list) do
         if file == comp_struct.comp.context then
-          utils.set_cursor(self.winid, comp_struct.comp.lstart + 1, 0)
+          target_row = comp_struct.comp.lstart + 1
         end
       end
     end
@@ -330,7 +331,7 @@ function FilePanel:highlight_file(file)
             self:redraw()
           end
 
-          utils.set_cursor(self.winid, cur.lstart + 1, 0)
+          target_row = cur.lstart + 1
           return true
         end
 
@@ -339,8 +340,13 @@ function FilePanel:highlight_file(file)
     end
   end
 
-  -- Needed to update the cursorline highlight when the panel is not focused.
-  utils.update_win(self.winid)
+  for _, w in ipairs(self:cursor_winids()) do
+    if target_row then
+      utils.set_cursor(w, target_row, 0)
+    end
+    -- Needed to update the cursorline highlight when the panel is not focused.
+    utils.update_win(w)
+  end
 end
 
 function FilePanel:highlight_cur_file()
@@ -354,12 +360,11 @@ function FilePanel:highlight_prev_file()
     return
   end
 
-  pcall(
-    api.nvim_win_set_cursor,
-    self.winid,
-    { self.constrain_cursor(self.winid, -vim.v.count1), 0 }
-  )
-  utils.update_win(self.winid)
+  local target_row = self.constrain_cursor(self:cursor_winid(), -vim.v.count1)
+  for _, w in ipairs(self:cursor_winids()) do
+    pcall(api.nvim_win_set_cursor, w, { target_row, 0 })
+    utils.update_win(w)
+  end
 end
 
 function FilePanel:highlight_next_file()
@@ -367,11 +372,11 @@ function FilePanel:highlight_next_file()
     return
   end
 
-  pcall(api.nvim_win_set_cursor, self.winid, {
-    self.constrain_cursor(self.winid, vim.v.count1),
-    0,
-  })
-  utils.update_win(self.winid)
+  local target_row = self.constrain_cursor(self:cursor_winid(), vim.v.count1)
+  for _, w in ipairs(self:cursor_winids()) do
+    pcall(api.nvim_win_set_cursor, w, { target_row, 0 })
+    utils.update_win(w)
+  end
 end
 
 function FilePanel:reconstrain_cursor()
@@ -379,10 +384,10 @@ function FilePanel:reconstrain_cursor()
     return
   end
 
-  pcall(api.nvim_win_set_cursor, self.winid, {
-    self.constrain_cursor(self.winid, 0),
-    0,
-  })
+  local target_row = self.constrain_cursor(self:cursor_winid(), 0)
+  for _, w in ipairs(self:cursor_winids()) do
+    pcall(api.nvim_win_set_cursor, w, { target_row, 0 })
+  end
 end
 
 ---Set collapsed state for a directory, propagating to underlying tree nodes
@@ -415,12 +420,18 @@ function FilePanel:set_item_fold(item, open)
     self:redraw()
 
     if item.collapsed then
+      local target_row
       self.components.comp:deep_some(function(comp, _, _)
         if comp.context == item then
-          utils.set_cursor(self.winid, comp.lstart + 1)
+          target_row = comp.lstart + 1
           return true
         end
       end)
+      if target_row then
+        for _, w in ipairs(self:cursor_winids()) do
+          utils.set_cursor(w, target_row)
+        end
+      end
     end
   end
 end

@@ -501,7 +501,7 @@ function FileHistoryPanel:get_item_at_cursor()
     return
   end
 
-  local cursor = api.nvim_win_get_cursor(self.winid)
+  local cursor = api.nvim_win_get_cursor(self:cursor_winid())
   local line = cursor[1]
   local comp = self.components.comp:get_comp_on_line(line)
 
@@ -689,11 +689,12 @@ function FileHistoryPanel:highlight_item(item)
     return
   end
 
+  local target_row
   if item:instanceof(LogEntry.__get()) then
     ---@cast item LogEntry
     for _, comp_struct in ipairs(self.components.log.entries) do
       if comp_struct.comp.context == item then
-        pcall(api.nvim_win_set_cursor, self.winid, { comp_struct.comp.lstart, 0 })
+        target_row = comp_struct.comp.lstart
       end
     end
   else
@@ -704,7 +705,7 @@ function FileHistoryPanel:highlight_item(item)
 
       if i ~= -1 then
         if self.single_file then
-          pcall(api.nvim_win_set_cursor, self.winid, { comp_struct.comp.lstart + 1, 0 })
+          target_row = comp_struct.comp.lstart + 1
         else
           if entry.folded then
             entry.folded = false
@@ -712,20 +713,25 @@ function FileHistoryPanel:highlight_item(item)
             self:redraw()
           end
 
-          pcall(api.nvim_win_set_cursor, self.winid, { comp_struct.comp.lstart + i + 1, 0 })
+          target_row = comp_struct.comp.lstart + i + 1
         end
       elseif entry._pin_overlays and entry._pin_overlays[item.path] == item then
         -- pin_local overlays are transient FileEntries that aren't rendered
         -- as their own row, so there's no file-line to land on. Park the
         -- cursor on the entry header instead so commit-navigation actions
         -- still move the visible selection in lock-step with the diff.
-        pcall(api.nvim_win_set_cursor, self.winid, { comp_struct.comp.lstart, 0 })
+        target_row = comp_struct.comp.lstart
       end
     end
   end
 
-  -- Needed to update the cursorline highlight when the panel is not focused.
-  utils.update_win(self.winid)
+  for _, w in ipairs(self:cursor_winids()) do
+    if target_row then
+      pcall(api.nvim_win_set_cursor, w, { target_row, 0 })
+    end
+    -- Needed to update the cursorline highlight when the panel is not focused.
+    utils.update_win(w)
+  end
 end
 
 function FileHistoryPanel:highlight_prev_item()
@@ -733,12 +739,11 @@ function FileHistoryPanel:highlight_prev_item()
     return
   end
 
-  pcall(api.nvim_win_set_cursor, self.winid, {
-    self.constrain_cursor(self.winid, -vim.v.count1),
-    0,
-  })
-
-  utils.update_win(self.winid)
+  local target_row = self.constrain_cursor(self:cursor_winid(), -vim.v.count1)
+  for _, w in ipairs(self:cursor_winids()) do
+    pcall(api.nvim_win_set_cursor, w, { target_row, 0 })
+    utils.update_win(w)
+  end
 end
 
 function FileHistoryPanel:highlight_next_file()
@@ -746,12 +751,11 @@ function FileHistoryPanel:highlight_next_file()
     return
   end
 
-  pcall(api.nvim_win_set_cursor, self.winid, {
-    self.constrain_cursor(self.winid, vim.v.count1),
-    0,
-  })
-
-  utils.update_win(self.winid)
+  local target_row = self.constrain_cursor(self:cursor_winid(), vim.v.count1)
+  for _, w in ipairs(self:cursor_winids()) do
+    pcall(api.nvim_win_set_cursor, w, { target_row, 0 })
+    utils.update_win(w)
+  end
 end
 
 ---@param entry LogEntry
@@ -767,12 +771,18 @@ function FileHistoryPanel:set_entry_fold(entry, open)
     end
 
     -- Set the cursor at the top of the log entry.
+    local target_row
     self.components.log.entries.comp:some(function(comp, _, _)
       if comp.context == entry then
-        utils.set_cursor(self.winid, comp.lstart + 1)
+        target_row = comp.lstart + 1
         return true
       end
     end)
+    if target_row then
+      for _, w in ipairs(self:cursor_winids()) do
+        utils.set_cursor(w, target_row)
+      end
+    end
   end
 end
 
