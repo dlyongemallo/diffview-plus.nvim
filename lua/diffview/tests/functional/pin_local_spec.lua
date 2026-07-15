@@ -969,6 +969,11 @@ describe("overlay-aware navigation", function()
       end,
       render = function() end,
       redraw = function() end,
+      -- Stub the window-enumeration helper so we don't need a real buffer to
+      -- exercise the pin_local overlay code path.
+      cursor_winids = function()
+        return { -1 }
+      end,
     }, { __index = FileHistoryPanel })
 
     -- Spy on cursor moves rather than open a real window: the api function
