@@ -340,7 +340,7 @@ function PathLib:expand(path)
   for i = idx, #segments do
     local env_var = segments[i]:match("^%$(%S+)$")
     if env_var then
-      local value = vim.env[env_var]
+      local value = os.getenv(env_var)
       if value ~= nil then
         segments[i] = value
       end
