@@ -828,6 +828,25 @@ local update_files_impl = debounce.debounce_trailing(
               )
             end
 
+            -- A status change can flip a side's nulled state even when the
+            -- revs are identical (e.g. unstaging a newly added file: the
+            -- working entry goes "M" -> "?" and its a-side no longer has a
+            -- stage-0 blob). The NOOP path only copies `status` onto the old
+            -- entry; the Files' `nulled` flags are fixed at construction, so
+            -- the old a-side would keep showing — and try to reload — a blob
+            -- that no longer exists. Replace the entry instead.
+            if not replace_noop then
+              for _, sym in ipairs({ "a", "b", "c", "d" }) do
+                local of = old_file.layout:get_file_for(sym)
+                local nf = new_file.layout:get_file_for(sym)
+
+                if (of and of.nulled or false) ~= (nf and nf.nulled or false) then
+                  replace_noop = true
+                  break
+                end
+              end
+            end
+
             if replace_noop then
               if self.panel.cur_file == old_file then
                 self.panel:set_cur_file(new_file)
