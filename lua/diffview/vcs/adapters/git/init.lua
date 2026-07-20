@@ -1843,6 +1843,11 @@ end
 ---@param rev_arg string?
 ---@return string?
 function GitAdapter:file_blob_hash(path, rev_arg)
+  -- Empty output with exit code 0 is a real outcome, not a failure: the path
+  -- has no blob at that rev (e.g. a newly added file that was unstaged no
+  -- longer exists in the index at all). `fail_on_empty` would burn retries
+  -- and spam the log for it; instead let the empty result through and map it
+  -- to nil so callers can distinguish "no blob" from a blob hash.
   local out, code = self:exec_sync({
     "rev-parse",
     "--revs-only",
@@ -1850,10 +1855,9 @@ function GitAdapter:file_blob_hash(path, rev_arg)
   }, {
     cwd = self.ctx.toplevel,
     retry = 2,
-    fail_on_empty = true,
   })
 
-  if code ~= 0 then
+  if code ~= 0 or not out[1] or vim.trim(out[1]) == "" then
     return
   end
 

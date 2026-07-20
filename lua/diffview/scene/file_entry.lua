@@ -192,9 +192,13 @@ function FileEntry:validate_stage_buffers(stat)
           local is_modified = vim.bo[f.bufnr].modified
 
           if f.blob_hash then
+            -- `new_hash` is nil when the path no longer has a stage-0 blob at
+            -- all (e.g. a newly added file that was unstaged, leaving it
+            -- untracked). That is a content change like any other: the buffer
+            -- still shows the old staged blob and must be invalidated.
             local new_hash = self.adapter:file_blob_hash(f.path)
 
-            if new_hash and new_hash ~= f.blob_hash then
+            if new_hash ~= f.blob_hash then
               if is_modified then
                 utils.warn(
                   (
