@@ -216,13 +216,17 @@ Window.open_file = async.void(function(self)
     return
   end
 
+  -- On the content side of an added/deleted file `foldmethod=diff`
+  -- produces no folds; leave the buffer's own folding alone. See #299.
+  local solo_content_side = self:_paired_side_is_null()
+
   -- Apply the configured foldlevel before `_save_winopts` so the saved
   -- value covers the key we're about to override. Scope this to diff
   -- buffers (where `diff` is not explicitly false), matching the
   -- documented purpose of `view.foldlevel`; non-diff layouts like
   -- `diff1_raw` opt out via `diff = false` and supply their own
   -- foldlevel via the layout winopts.
-  if self.file.winopts and self.file.winopts.diff ~= false then
+  if self.file.winopts and self.file.winopts.diff ~= false and not solo_content_side then
     self.file.winopts.foldlevel = conf.view.foldlevel
   end
 
@@ -233,7 +237,7 @@ Window.open_file = async.void(function(self)
   if self:is_nulled() then
     self:apply_null_winopts()
   else
-    self:apply_file_winopts()
+    self:apply_file_winopts({ skip_fold = solo_content_side })
   end
 
   local view = lib.get_current_view()
@@ -366,11 +370,46 @@ function Window:_restore_winopts()
   end
 end
 
-function Window:apply_file_winopts()
+-- Fold-related winopts skipped by `apply_file_winopts` when `skip_fold`
+-- is set. See #299.
+local FOLD_OPTS = { foldmethod = true, foldenable = true, foldlevel = true }
+
+---@param opt? { skip_fold?: boolean }
+function Window:apply_file_winopts(opt)
   assert(self.file)
-  if self.file.winopts then
+  if not self.file.winopts then
+    return
+  end
+
+  if opt and opt.skip_fold then
+    local filtered = {}
+    for k, v in pairs(self.file.winopts) do
+      if not FOLD_OPTS[k] then
+        filtered[k] = v
+      end
+    end
+    utils.set_local(self.id, filtered)
+  else
     utils.set_local(self.id, self.file.winopts)
   end
+end
+
+---True when a sibling window in the parent layout is nulled: the
+---content side of an added/deleted file.
+---@return boolean
+function Window:_paired_side_is_null()
+  local windows = self.parent and self.parent.windows
+  if not windows then
+    return false
+  end
+
+  for _, other in ipairs(windows) do
+    if other ~= self and other.file and other.file.nulled then
+      return true
+    end
+  end
+
+  return false
 end
 
 function Window:apply_null_winopts()
