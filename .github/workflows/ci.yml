@@ -145,8 +145,6 @@ jobs:
         # `nvim_win_add_ns`) all have an explicit gate. `stable` /
         # `nightly` give forward-compat coverage on top.
         neovim: [v0.10.4, v0.11.6, stable, nightly]
-    # Keep nightly as an early-warning signal but don't let it block PRs.
-    continue-on-error: ${{ matrix.neovim == 'nightly' }}
     name: Test (Neovim ${{ matrix.neovim }})
     steps:
       - uses: actions/checkout@v4
@@ -184,6 +182,8 @@ jobs:
         run: pip install mercurial
 
       - name: Run tests
+        # Keep nightly as an early-warning signal but don't let it block PRs.
+        continue-on-error: ${{ matrix.neovim == 'nightly' }}
         run: |
           export PATH="$HOME/.local/bin:$PATH"
           make test
