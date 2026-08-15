@@ -558,12 +558,10 @@ function M.update_diff_hl()
 end
 
 function M.setup()
-  -- Ensure diff highlights are defined by loading the diff syntax if needed.
-  -- Some colorschemes don't set diffAdded/diffRemoved/diffChanged until the
-  -- diff filetype is encountered.
-  if vim.fn.hlexists("diffAdded") == 0 then
-    vim.cmd("runtime! syntax/diff.vim")
-  end
+  -- Provide standard diff fallbacks without loading buffer-local syntax.
+  M.hi_link("diffAdded", "Added", { default = true })
+  M.hi_link("diffRemoved", "Removed", { default = true })
+  M.hi_link("diffChanged", "Changed", { default = true })
 
   for name, v in pairs(M.get_hl_groups()) do
     v = vim.tbl_extend("force", v, { default = true })
