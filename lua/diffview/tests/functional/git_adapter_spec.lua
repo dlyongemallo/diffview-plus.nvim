@@ -4,6 +4,7 @@ local GitAdapter = require("diffview.vcs.adapters.git").GitAdapter
 local GitRev = require("diffview.vcs.adapters.git.rev").GitRev
 local Job = require("diffview.job").Job
 local RevType = require("diffview.vcs.rev").RevType
+local arg_parser = require("diffview.arg_parser")
 local test_utils = require("diffview.tests.helpers")
 
 local run = test_utils.run
@@ -1834,6 +1835,179 @@ describe("diffview.vcs.adapters.git", function()
           assert.is_nil(state.merged_set)
           assert.is_nil(state.merged_paths_seen)
           assert.is_nil(state.main_refs)
+        end)
+
+        vim.schedule(function()
+          pcall(vim.fn.delete, repo, "rf")
+        end)
+        async.await(async.scheduler())
+
+        if not ok then
+          error(err)
+        end
+      end)
+    )
+  end)
+
+  describe("diffview_options --rename-threshold", function()
+    it(
+      "parses an integer value onto DiffViewOptions",
+      test_utils.async_test(function()
+        local repo, adapter = make_repo_and_adapter()
+
+        local ok, err = pcall(function()
+          local argo = arg_parser.parse({ "--rename-threshold=40" })
+          local opt = adapter:diffview_options(argo)
+          assert.is_not_nil(opt)
+          assert.equals(40, opt.options.rename_threshold)
+        end)
+
+        vim.schedule(function()
+          pcall(vim.fn.delete, repo, "rf")
+        end)
+        async.await(async.scheduler())
+
+        if not ok then
+          error(err)
+        end
+      end)
+    )
+
+    it(
+      "accepts a trailing percent sign",
+      test_utils.async_test(function()
+        local repo, adapter = make_repo_and_adapter()
+
+        local ok, err = pcall(function()
+          local argo = arg_parser.parse({ "--rename-threshold=30%" })
+          local opt = adapter:diffview_options(argo)
+          assert.is_not_nil(opt)
+          assert.equals(30, opt.options.rename_threshold)
+        end)
+
+        vim.schedule(function()
+          pcall(vim.fn.delete, repo, "rf")
+        end)
+        async.await(async.scheduler())
+
+        if not ok then
+          error(err)
+        end
+      end)
+    )
+
+    it(
+      "leaves DiffViewOptions.rename_threshold nil for invalid values",
+      test_utils.async_test(function()
+        local repo, adapter = make_repo_and_adapter()
+
+        local ok, err = pcall(function()
+          -- Out of range and non-numeric both fall back to nil (with a warning).
+          for _, bad in ipairs({ "abc", "-5", "150", "12.5" }) do
+            local argo = arg_parser.parse({ "--rename-threshold=" .. bad })
+            local opt = adapter:diffview_options(argo)
+            assert.is_not_nil(opt)
+            assert.is_nil(opt.options.rename_threshold)
+          end
+        end)
+
+        vim.schedule(function()
+          pcall(vim.fn.delete, repo, "rf")
+        end)
+        async.await(async.scheduler())
+
+        if not ok then
+          error(err)
+        end
+      end)
+    )
+
+    it(
+      "leaves DiffViewOptions.rename_threshold nil when the flag is absent",
+      test_utils.async_test(function()
+        local repo, adapter = make_repo_and_adapter()
+
+        local ok, err = pcall(function()
+          local argo = arg_parser.parse({})
+          local opt = adapter:diffview_options(argo)
+          assert.is_not_nil(opt)
+          assert.is_nil(opt.options.rename_threshold)
+        end)
+
+        vim.schedule(function()
+          pcall(vim.fn.delete, repo, "rf")
+        end)
+        async.await(async.scheduler())
+
+        if not ok then
+          error(err)
+        end
+      end)
+    )
+
+    it(
+      "leaves DiffViewOptions.rename_threshold nil for a bare or empty value",
+      test_utils.async_test(function()
+        local repo, adapter = make_repo_and_adapter()
+
+        local ok, err = pcall(function()
+          -- Bare `--rename-threshold` (arg_parser records the value as "true"
+          -- and casts it to boolean) and an explicitly-empty `--rename-threshold=`
+          -- both distinct from "flag absent"; the parser warns and drops them.
+          for _, args in ipairs({ { "--rename-threshold" }, { "--rename-threshold=" } }) do
+            local argo = arg_parser.parse(args)
+            local opt = adapter:diffview_options(argo)
+            assert.is_not_nil(opt)
+            assert.is_nil(opt.options.rename_threshold)
+          end
+        end)
+
+        vim.schedule(function()
+          pcall(vim.fn.delete, repo, "rf")
+        end)
+        async.await(async.scheduler())
+
+        if not ok then
+          error(err)
+        end
+      end)
+    )
+  end)
+
+  describe("file_history_options --rename-threshold", function()
+    it(
+      "parses an integer value onto GitLogOptions",
+      test_utils.async_test(function()
+        local repo, adapter = make_repo_and_adapter()
+
+        local ok, err = pcall(function()
+          local argo = arg_parser.parse({ "--rename-threshold=40" })
+          local log_opt = adapter:file_history_options(nil, { "init.txt" }, argo)
+          assert.is_not_nil(log_opt)
+          assert.equals(40, log_opt.rename_threshold)
+        end)
+
+        vim.schedule(function()
+          pcall(vim.fn.delete, repo, "rf")
+        end)
+        async.await(async.scheduler())
+
+        if not ok then
+          error(err)
+        end
+      end)
+    )
+
+    it(
+      "leaves GitLogOptions.rename_threshold nil for invalid values",
+      test_utils.async_test(function()
+        local repo, adapter = make_repo_and_adapter()
+
+        local ok, err = pcall(function()
+          local argo = arg_parser.parse({ "--rename-threshold=nope" })
+          local log_opt = adapter:file_history_options(nil, { "init.txt" }, argo)
+          assert.is_not_nil(log_opt)
+          assert.is_nil(log_opt.rename_threshold)
         end)
 
         vim.schedule(function()

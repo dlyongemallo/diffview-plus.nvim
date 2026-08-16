@@ -201,6 +201,14 @@ COMMANDS                                        *diffview-commands*
                         invocation; pass `--no-panel=false` to force the panel
                         shown.
 
+        --rename-threshold={n}
+                        Rename detection similarity, as an integer in [0, 100]
+                        (a trailing `%` is accepted). Overrides
+                        |diffview-config-rename_threshold| for this view.
+                        Invalid values are ignored with a warning.
+                        NOTE: This is Git-specific. For Jujutsu, this option
+                        is ignored with a warning.
+
                                                 *:DiffviewDiffFiles*
 :DiffviewDiffFiles {file1} {file2}
 
@@ -502,6 +510,14 @@ COMMANDS                                        *diffview-commands*
                 List only commits before a certain date. {datetime} can be
                 YYYY-mm-dd, YYYY-mm-dd HH:mm:ss, or natural language (for
                 instance "2 weeks 6 hours 12 minutes ago")
+
+        --rename-threshold={n}
+                Rename detection similarity, as an integer in [0, 100]
+                (a trailing `%` is accepted). Overrides
+                |diffview-config-rename_threshold| for this view.
+                Invalid values are ignored with a warning.
+                NOTE: This is Git-specific. For Jujutsu, this option is
+                ignored with a warning.
 
     Mercurial Options: ~
 

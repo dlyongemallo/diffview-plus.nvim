@@ -28,6 +28,32 @@ local uv = vim.uv
 
 local M = {}
 
+---Parse a `--rename-threshold` CLI value.
+---Accepts `"40"` or `"40%"` (trailing `%` matches git's own `--find-renames`
+---spelling); the value must be an integer in [0, 100]. On invalid input warns
+---and returns nil so the caller falls back to the global config. `nil` (flag
+---absent) is the only silent return path; bare `--rename-threshold` (boolean
+---`true` from `arg_parser`), an empty value (`--rename-threshold=`), and any
+---non-integer or out-of-range string all warn via `config.validate.integer`.
+---@param raw string[]|string|boolean|nil
+---@return integer?
+local function parse_rename_threshold_flag(raw)
+  if raw == nil then
+    return nil
+  end
+  -- `tonumber("40%")` returns nil, so strip a trailing `%` before delegating
+  -- to `validate.integer`. Non-string inputs (e.g., a boolean from a bare
+  -- flag) pass through and the validator warns as expected.
+  local wrap = { v = type(raw) == "string" and (raw:gsub("%%$", "")) or raw }
+  config.validate.integer(wrap, "v", nil, {
+    min = 0,
+    max = 100,
+    nilable = true,
+    path = "--rename-threshold",
+  })
+  return wrap.v --[[@as integer? ]]
+end
+
 ---@class GitAdapter : VCSAdapter
 ---@operator call : GitAdapter
 local GitAdapter = oop.create_class("GitAdapter", VCSAdapter)
@@ -575,7 +601,7 @@ function GitAdapter:stream_fh_data(state)
       "--no-show-signature",
       "--pretty=format:%x00%n" .. GitAdapter.COMMIT_PRETTY_FMT,
       (function()
-        local t = config.get_config().rename_threshold
+        local t = state.log_options.rename_threshold or config.get_config().rename_threshold
         return t and ("-M" .. t .. "%") or nil
       end)(),
       "--numstat",
@@ -877,6 +903,7 @@ function GitAdapter:file_history_options(range, paths, argo)
     ---@diagnostic disable-next-line: assign-type-mismatch
     log_options[key] = v
   end
+  log_options.rename_threshold = parse_rename_threshold_flag(argo:get_flag("rename-threshold"))
 
   if range then
     paths, rel_paths = {}, {}
@@ -1707,6 +1734,7 @@ function GitAdapter:diffview_options(argo)
       or nil
     ) --[[@as string? ]],
     selected_row = tonumber(argo:get_flag("selected-row", { no_empty = true })),
+    rename_threshold = parse_rename_threshold_flag(argo:get_flag("rename-threshold")),
   }
 
   return { left = left, right = right, options = options }
@@ -2260,7 +2288,7 @@ GitAdapter.tracked_files = async.wrap(function(self, left, right, args, kind, op
   ---@type FileEntry[]
   local conflicts = {}
   local log_opt = { label = "GitAdapter:tracked_files()" }
-  local rename_threshold = config.get_config().rename_threshold
+  local rename_threshold = opt.rename_threshold or config.get_config().rename_threshold
   local rename_flag = rename_threshold and ("-M" .. rename_threshold .. "%") or nil
 
   local namestat_job = Job({
@@ -2776,6 +2804,7 @@ function GitAdapter:init_completion()
   end)
   self.comp.open:put({ "selected-row" })
   self.comp.open:put({ "no-panel" })
+  self.comp.open:put({ "rename-threshold" }, {})
 
   self.comp.file_history:put({ "base" }, function(_, arg_lead)
     return utils.vec_join("LOCAL", self:rev_candidates(arg_lead))
@@ -2819,6 +2848,7 @@ function GitAdapter:init_completion()
   self.comp.file_history:put({ "-S" }, {})
   self.comp.file_history:put({ "--after", "--since" }, {})
   self.comp.file_history:put({ "--before", "--until" }, {})
+  self.comp.file_history:put({ "--rename-threshold" }, {})
 end
 
 M.GitAdapter = GitAdapter

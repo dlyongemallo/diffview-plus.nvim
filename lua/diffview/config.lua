@@ -795,6 +795,7 @@ M._config = M.defaults
 ---@field path_args string[]
 ---@field after? string
 ---@field before? string
+---@field rename_threshold? integer Per-view rename similarity threshold (0-100). Overrides |diffview-config-rename_threshold| for this view.
 
 ---@class HgLogOptions
 ---@field follow? string
@@ -842,6 +843,7 @@ M._config = M.defaults
 ---@field path_args? string[]
 ---@field after? string
 ---@field before? string
+---@field rename_threshold? integer Per-view rename similarity threshold (0-100). Overrides |diffview-config-rename_threshold| for this view.
 
 ---@class HgLogOptions.user
 ---@field follow? string
@@ -889,6 +891,7 @@ M.log_option_defaults = {
     G = nil,
     S = nil,
     path_args = {},
+    rename_threshold = nil,
   },
   ---@type HgLogOptions
   hg = {
@@ -1886,4 +1889,10 @@ function M.setup(user_config)
 end
 
 M.actions = actions
+
+-- Shared value validators. Used internally by `setup()` for the config schema,
+-- and re-exported for CLI arg parsing (e.g., `--rename-threshold`) so both
+-- surfaces produce the same warn-and-fallback behaviour.
+M.validate = validate
+
 return M

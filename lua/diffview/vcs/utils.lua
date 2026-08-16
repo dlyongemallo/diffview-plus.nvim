@@ -156,6 +156,12 @@ M.diff_file_list = async.wrap(function(adapter, left, right, path_args, dv_opt, 
   local files = FileDict()
   local rev_args = adapter:rev_to_args(left, right)
   local errors = {}
+
+  -- Forward the CLI `--rename-threshold` override into the per-view `opt` so
+  -- `tracked_files` picks it up without widening its signature.
+  if dv_opt.rename_threshold then
+    opt.rename_threshold = dv_opt.rename_threshold
+  end
   (function()
     local err, tfiles, tconflicts = await(
       adapter:tracked_files(left, right, utils.vec_join(rev_args, "--", path_args), "working", opt)
