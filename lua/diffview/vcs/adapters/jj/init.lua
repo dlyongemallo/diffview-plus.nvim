@@ -732,6 +732,10 @@ function JjAdapter:diffview_options(argo)
 
   logger:fmt_debug("Parsed revs: left = %s, right = %s", left, right)
 
+  if argo:get_flag("rename-threshold") then
+    utils.warn("The '--rename-threshold' option is not supported for Jujutsu. Ignoring.")
+  end
+
   local options = {
     show_untracked = arg_parser.ambiguous_bool(
       argo:get_flag({ "u", "untracked-files" }, { plain = true }),
@@ -831,6 +835,10 @@ function JjAdapter:file_history_options(range, paths, argo)
   if range then
     utils.err("Line ranges are not supported for jj!")
     return
+  end
+
+  if argo:get_flag("rename-threshold") then
+    utils.warn("The '--rename-threshold' option is not supported for Jujutsu. Ignoring.")
   end
 
   local rel_paths = vim.tbl_map(function(v)

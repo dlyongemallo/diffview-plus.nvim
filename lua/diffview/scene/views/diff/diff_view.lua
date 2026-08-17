@@ -35,6 +35,7 @@ local same_rev = lazy.access(rev_lib, "same_rev") --[[@as fun(a: Rev?, b: Rev?):
 ---@field show_untracked? boolean
 ---@field selected_file? string Path to the preferred initially selected file.
 ---@field selected_row? integer Row to position the cursor on after opening the selected file.
+---@field rename_threshold? integer Per-view rename similarity threshold (0-100). Overrides |diffview-config-rename_threshold| for this view.
 
 ---@class DiffView : StandardView
 ---@operator call : DiffView
