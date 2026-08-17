@@ -304,6 +304,76 @@ describe("diffview.scene.window", function()
       end)
     )
 
+    -- Regression (#299): fold winopts must be skipped on the content
+    -- side of an added/deleted file, so the buffer's own folding
+    -- (ftplugin, treesitter, ufo, ...) survives.
+    it(
+      "does not override fold options when the paired window's file is nulled",
+      helpers.async_test(function()
+        config.setup({ view = { foldlevel = 0 } })
+
+        local adapter = mock_adapter()
+        local bufnr = vim.api.nvim_create_buf(false, true)
+        local win, file = make_window(adapter)
+        file.bufnr = bufnr
+        file.loaded = true
+
+        local sibling_file = { nulled = true }
+        local sibling_win = { file = sibling_file }
+        win.parent = vim.tbl_extend("force", stub_parent(), { windows = { win, sibling_win } })
+
+        -- Values distinct from what `winopts` would install, so survival
+        -- proves the override was skipped rather than coincidentally matching.
+        vim.wo[win.id].foldmethod = "marker"
+        vim.wo[win.id].foldlevel = 42
+        vim.wo[win.id].foldenable = false
+
+        async.await(win:open_file())
+
+        assert.equals("marker", vim.wo[win.id].foldmethod)
+        assert.equals(42, vim.wo[win.id].foldlevel)
+        assert.is_false(vim.wo[win.id].foldenable)
+
+        if vim.api.nvim_win_is_valid(test_winid) then
+          vim.api.nvim_win_close(test_winid, true)
+        end
+        test_winid = nil
+        Window.winopt_store[bufnr] = nil
+        vim.api.nvim_buf_delete(bufnr, { force = true })
+      end)
+    )
+
+    it(
+      "still applies fold options when no sibling window is nulled",
+      helpers.async_test(function()
+        config.setup({ view = { foldlevel = 0 } })
+
+        local adapter = mock_adapter()
+        local bufnr = vim.api.nvim_create_buf(false, true)
+        local win, file = make_window(adapter)
+        file.bufnr = bufnr
+        file.loaded = true
+
+        local sibling_file = { nulled = false }
+        local sibling_win = { file = sibling_file }
+        win.parent = vim.tbl_extend("force", stub_parent(), { windows = { win, sibling_win } })
+
+        vim.wo[win.id].foldmethod = "marker"
+
+        async.await(win:open_file())
+
+        assert.equals("diff", vim.wo[win.id].foldmethod)
+        assert.equals(0, vim.wo[win.id].foldlevel)
+
+        if vim.api.nvim_win_is_valid(test_winid) then
+          vim.api.nvim_win_close(test_winid, true)
+        end
+        test_winid = nil
+        Window.winopt_store[bufnr] = nil
+        vim.api.nvim_buf_delete(bufnr, { force = true })
+      end)
+    )
+
     -- Regression: `Layout.open_files` yields between its load loop and its
     -- open loop. A rapid navigation in that gap deactivates the in-flight
     -- file; bailing on `active=false` here used to leave the window holding
