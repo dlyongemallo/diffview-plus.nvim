@@ -1661,6 +1661,55 @@ JjAdapter._query_merge_context = async.wrap(function(self, callback)
   callback(nil, ctx)
 end)
 
+---Template fed to `jj diff -T ...` by `tracked_files` to list the status,
+---path, and (for renames/copies) old path of each changed file.
+---
+---Each file produces exactly one line terminated by `\n`. Fields are
+---separated by `\x1f` (ASCII US) and are, in order:
+---  1. status_char (`M`, `A`, `D`, `R`, `C`, ...)
+---  2. path (the target/right path -- the only path for non-renames)
+---  3. old path, or an empty string when the entry isn't a rename/copy
+---
+---`-T` is used instead of `--summary`: `--summary`'s built-in rename/copy
+---display (`display_diff_path()`) factors out the common prefix/suffix of
+---the two paths into `prefix{old => new}suffix`, unescaped. That's lossy,
+---not just awkward to parse: renaming `p => q` to `z`, and separately
+---renaming `p` to `q => z`, both render as `R {p => q => z}` -- no parser
+---can recover which happened from that string alone. Calling
+---`self.source().path()` / `self.target().path()` directly instead always
+---yields the full, unabbreviated paths.
+---
+---The old-path field is always present (empty when unused) rather than
+---omitted, so every line has exactly 3 fields and parsing never has to
+---branch on how many separators showed up.
+local TRACKED_FILES_TEMPLATE = table.concat({
+  [[ self.status_char() ++ "\x1f" ++ self.path() ++ "\x1f" ]],
+  [[ ++ if(self.status() == "renamed" || self.status() == "copied", ]],
+  [[      self.source().path(), "") ]],
+  [[ ++ "\n" ]],
+}, "")
+
+---Parse one line of `TRACKED_FILES_TEMPLATE` output.
+---
+---Returns `nil` for a line with no path (e.g. a stray blank line), so
+---callers can `if not status then goto continue end`-style skip it.
+---@param line string
+---@return string? status
+---@return string? path
+---@return string? oldpath
+local function parse_tracked_files_line(line)
+  local fields = vim.split(line, "\x1f", { plain = true })
+  local status, path = fields[1], fields[2]
+
+  if not status or not path or path == "" then
+    return nil
+  end
+
+  local oldpath = fields[3] ~= "" and fields[3] or nil
+
+  return status, path, oldpath
+end
+
 ---@param self JjAdapter
 ---@param left Rev
 ---@param right Rev
@@ -1671,7 +1720,7 @@ end)
 JjAdapter.tracked_files = async.wrap(function(self, left, right, args, kind, opt, callback)
   local job = Job({
     command = self:bin(),
-    args = utils.vec_join(self:args(), "diff", "--summary", args),
+    args = utils.vec_join(self:args(), "diff", "-T", TRACKED_FILES_TEMPLATE, args),
     cwd = self.ctx.toplevel,
     retry = 2,
     log_opt = { label = "JjAdapter:tracked_files()" },
@@ -1706,27 +1755,18 @@ JjAdapter.tracked_files = async.wrap(function(self, left, right, args, kind, opt
 
   local files = {}
   for _, line in ipairs(job.stdout) do
-    local status, path = line:match("^(%u)%s+(.*)$")
+    local status, path, oldpath = parse_tracked_files_line(line)
 
-    if status and path then
-      local oldpath
-      if status == "R" or status == "C" then
-        local from_path, to_path = path:match("^(.-)%s+=>%s+(.-)$")
-        oldpath = from_path
-        path = to_path or path
-      end
-
-      if not conflicting[path] then
-        files[#files + 1] = FileEntry.with_layout(opt.default_layout, {
-          adapter = self,
-          path = path,
-          oldpath = oldpath,
-          status = status,
-          stats = {},
-          kind = kind,
-          revs = { a = left, b = right },
-        })
-      end
+    if status and path and not conflicting[path] then
+      files[#files + 1] = FileEntry.with_layout(opt.default_layout, {
+        adapter = self,
+        path = path,
+        oldpath = oldpath,
+        status = status,
+        stats = {},
+        kind = kind,
+        revs = { a = left, b = right },
+      })
     end
   end
 
@@ -2002,7 +2042,7 @@ M.JjAdapter = JjAdapter
 -- adapter; the shape is unstable.
 M._test = {
   structure_fh_data = structure_fh_data,
-  FH_TEMPLATE = FH_TEMPLATE,
+  parse_tracked_files_line = parse_tracked_files_line,
   is_non_literal_pathspec = is_non_literal_pathspec,
   is_ambiguous_literal_path = is_ambiguous_literal_path,
   quote_path_args = quote_path_args,

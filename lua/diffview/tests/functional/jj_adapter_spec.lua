@@ -775,6 +775,148 @@ describe("diffview.vcs.adapters.jj", function()
       )
 
       it(
+        "reports the full old and new paths for a renamed file",
+        helpers.async_test(function()
+          if not jj_available() then
+            pending("jj not installed")
+            return
+          end
+
+          -- Same directory, common suffix (`.lua`) -- this is the shape `jj diff
+          -- --summary` would abbreviate to `src/{main => renamed}.lua`. Content is left
+          -- untouched so jj's similarity heuristic reliably reports this as a rename
+          -- rather than add+delete.
+          repo.write("src/main.lua", 'print("v1")\n')
+          repo.jj({ "describe", "-m", "initial" })
+          repo.jj({ "new" })
+
+          os.rename(repo.dir .. "/src/main.lua", repo.dir .. "/src/renamed.lua")
+
+          local adapter = repo.adapter()
+          local left = adapter.Rev(
+            RevType.COMMIT,
+            run({ "jj", "show", "-T", "commit_id", "@-", "--no-patch" }, repo.dir)
+          )
+          local right = adapter.Rev(RevType.LOCAL)
+          local args = adapter:rev_to_args(left, right)
+
+          local err, files = await(
+            adapter:tracked_files(
+              left,
+              right,
+              args,
+              "working",
+              { default_layout = Diff2, merge_layout = Diff2 }
+            )
+          )
+
+          assert.is_nil(err)
+          assert.equals(1, #files)
+          assert.equals("R", files[1].status)
+          assert.equals("src/renamed.lua", files[1].path)
+          assert.equals("src/main.lua", files[1].oldpath)
+        end)
+      )
+
+      it(
+        "reports the full old and new paths when they contain literal `{`/`}`",
+        helpers.async_test(function()
+          if not jj_available() then
+            pending("jj not installed")
+            return
+          end
+
+          -- Regression coverage for a corner case that trips up a naive
+          -- `--summary` parser: renaming `a{x}/f.txt` to `a{y}/f.txt` renders
+          -- as `R {a{x} => a{y}}/f.txt`, where jj's own wrapping braces sit
+          -- right next to literal braces from the directory names. A parser
+          -- that just matches the first `{`/`}` pair gets this wrong (e.g.
+          -- recovering `a{x}}/f.txt` instead of `a{x}/f.txt`). `-T
+          -- TRACKED_FILES_TEMPLATE` sidesteps the problem entirely by reading
+          -- `source().path()`/`target().path()` directly, so this should
+          -- round-trip correctly regardless of what characters the path
+          -- contains.
+          repo.write("a{x}/f.txt", "hi\n")
+          repo.jj({ "describe", "-m", "add" })
+          repo.jj({ "new" })
+
+          vim.fn.mkdir(repo.dir .. "/a{y}", "p")
+          os.rename(repo.dir .. "/a{x}/f.txt", repo.dir .. "/a{y}/f.txt")
+
+          local adapter = repo.adapter()
+          local left = adapter.Rev(
+            RevType.COMMIT,
+            run({ "jj", "show", "-T", "commit_id", "@-", "--no-patch" }, repo.dir)
+          )
+          local right = adapter.Rev(RevType.LOCAL)
+          local args = adapter:rev_to_args(left, right)
+
+          local err, files = await(
+            adapter:tracked_files(
+              left,
+              right,
+              args,
+              "working",
+              { default_layout = Diff2, merge_layout = Diff2 }
+            )
+          )
+
+          assert.is_nil(err)
+          assert.equals(1, #files)
+          assert.equals("R", files[1].status)
+          assert.equals("a{y}/f.txt", files[1].path)
+          assert.equals("a{x}/f.txt", files[1].oldpath)
+        end)
+      )
+
+      it(
+        "reports the full old and new paths when a name contains ` => `",
+        helpers.async_test(function()
+          if not jj_available() then
+            pending("jj not installed")
+            return
+          end
+
+          -- Unlike the `{`/`}` case above, this one is provably unrecoverable
+          -- from `--summary` output, not just hard to parse: renaming a file
+          -- named `p => q` to `z`, and separately renaming a file named `p`
+          -- to `q => z`, both render as the identical line `R {p => q => z}`
+          -- -- no parser can tell which rename produced it. `-T
+          -- TRACKED_FILES_TEMPLATE` never renders that ambiguous form in the
+          -- first place, so this resolves correctly.
+          repo.write("p => q", "hi\n")
+          repo.jj({ "describe", "-m", "add" })
+          repo.jj({ "new" })
+
+          os.rename(repo.dir .. "/p => q", repo.dir .. "/z")
+
+          local adapter = repo.adapter()
+          local left = adapter.Rev(
+            RevType.COMMIT,
+            run({ "jj", "show", "-T", "commit_id", "@-", "--no-patch" }, repo.dir)
+          )
+          local right = adapter.Rev(RevType.LOCAL)
+          local args = adapter:rev_to_args(left, right)
+
+          local err, files = await(
+            adapter:tracked_files(
+              left,
+              right,
+              args,
+              "working",
+              { default_layout = Diff2, merge_layout = Diff2 }
+            )
+          )
+
+          assert.is_nil(err)
+          assert.equals(1, #files)
+          assert.equals("R", files[1].status)
+          assert.equals("z", files[1].path)
+          assert.equals("p => q", files[1].oldpath)
+        end)
+      )
+
+      it(
         "shows file content at a revision without errors",
         helpers.async_test(function()
           if not jj_available() then
@@ -1820,6 +1962,47 @@ describe("diffview.vcs.adapters.jj", function()
         { status = "M", path = "y" },
         { status = "D", path = "z", stats = { additions = 0, deletions = 7 } },
       }, data.namestat)
+    end)
+  end)
+
+  describe("parse_tracked_files_line", function()
+    local parse_tracked_files_line =
+      require("diffview.vcs.adapters.jj")._test.parse_tracked_files_line
+
+    local US = "\x1f" -- field separator
+
+    it("parses a modified/added/deleted line with no old path", function()
+      local status, path, oldpath = parse_tracked_files_line("M" .. US .. "src/main.lua" .. US)
+      assert.equals("M", status)
+      assert.equals("src/main.lua", path)
+      assert.is_nil(oldpath)
+    end)
+
+    it("parses a renamed line with the old path in the 3rd field", function()
+      local status, path, oldpath =
+        parse_tracked_files_line("R" .. US .. "common/new.txt" .. US .. "common/old.txt")
+      assert.equals("R", status)
+      assert.equals("common/new.txt", path)
+      assert.equals("common/old.txt", oldpath)
+    end)
+
+    it("parses a copied line the same way as renamed", function()
+      local status, path, oldpath = parse_tracked_files_line("C" .. US .. "b.txt" .. US .. "a.txt")
+      assert.equals("C", status)
+      assert.equals("b.txt", path)
+      assert.equals("a.txt", oldpath)
+    end)
+
+    it("treats an empty 3rd field as nil, not an empty string", function()
+      local _, _, oldpath = parse_tracked_files_line("M" .. US .. "f.txt" .. US .. "")
+      assert.is_nil(oldpath)
+    end)
+
+    it("returns nil for a line with no path (e.g. a stray blank line)", function()
+      local status, path, oldpath = parse_tracked_files_line("")
+      assert.is_nil(status)
+      assert.is_nil(path)
+      assert.is_nil(oldpath)
     end)
   end)
 
