@@ -118,7 +118,7 @@ M.compat = {}
 ---suppress entries that would be no-ops in the current view. Weak keys let
 ---closures returned by action factories be collected once no keymap references
 ---them anymore.
----@alias diffview.ActionTag "merge_only" | "working_tree_only"
+---@alias diffview.ActionTag "merge_only" | "working_tree_only" | "stage_or_resolve"
 ---@type table<function, diffview.ActionTag>
 local action_meta = setmetatable({}, { __mode = "k" })
 
@@ -153,10 +153,10 @@ function M._is_applicable(fn, view)
     return view ~= nil and (view --[[@as DiffView]]).merge_ctx ~= nil
   end
   if t == "working_tree_only" then
-    -- Index-vs-worktree actions (staging, etc.) are only meaningful when the
-    -- diff compares STAGE against LOCAL. `left`/`right` exist on `DiffView`
-    -- and `FileHistoryView`; in the latter, `left.type` is `COMMIT`, so the
-    -- predicate correctly evaluates to false there.
+    -- Strict index-vs-worktree actions (`stage_all`, `unstage_all`) are only
+    -- meaningful when the diff compares STAGE against LOCAL. `left`/`right`
+    -- exist on `DiffView` and `FileHistoryView`; in the latter, `left.type`
+    -- is `COMMIT`, so the predicate correctly evaluates to false there.
     if view == nil then
       return false
     end
@@ -165,6 +165,24 @@ function M._is_applicable(fn, view)
       and v.right ~= nil
       and v.left.type == RevType.STAGE
       and v.right.type == RevType.LOCAL
+  end
+  if t == "stage_or_resolve" then
+    -- `toggle_stage_entry` covers index-based staging (git/hg) and
+    -- content-based resolution (index-less adapters, e.g., jj). Split by
+    -- adapter capability, not just rev shape, so a staging adapter in a
+    -- mid-merge non-STAGE view (e.g., `:DiffviewOpen HEAD` during a git
+    -- merge) doesn't get the resolve treatment.
+    if view == nil then
+      return false
+    end
+    local v = view --[[@as DiffView]]
+    if v.left == nil or v.right == nil then
+      return false
+    end
+    if v.adapter:has_staging() then
+      return v.left.type == RevType.STAGE and v.right.type == RevType.LOCAL
+    end
+    return v.right.type == RevType.LOCAL and v.merge_ctx ~= nil
   end
   return true
 end
@@ -1261,7 +1279,7 @@ local action_names = {
 ---stub site) because the stubs are generated in the loop below.
 ---@type table<string, diffview.ActionTag>
 local action_tags = {
-  toggle_stage_entry = "working_tree_only",
+  toggle_stage_entry = "stage_or_resolve",
   stage_all = "working_tree_only",
   unstage_all = "working_tree_only",
 }

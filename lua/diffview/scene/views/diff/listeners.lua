@@ -18,11 +18,21 @@ return function(view)
   -- guarded close aborts (dirty stage buffer); cleared when the retry either
   -- succeeds or no longer applies (working/conflicting non-empty).
   local auto_close_pending = false
+  -- Latched once this view surfaces a conflict, so index-less adapters (where
+  -- a resolved file lands in `working` rather than leaving the view) only
+  -- auto-close after a merge was actually resolved here.
+  local had_conflicts = false
 
-  ---Run the `auto_close_on_empty` policy. Closes the view when there are no
-  ---working/conflicting entries left and stage buffers are clean. If the
-  ---guarded close aborts, set the retry flag so the next stage save (via
-  ---`buf_write_post`) re-evaluates.
+  ---Run the `auto_close_on_empty` policy. Closes the view when the
+  ---`conflicting` bucket is empty AND stage buffers are clean AND either:
+  ---  (a) staging adapters (git/hg): the `working` bucket is also empty,
+  ---      i.e., every change has been staged; or
+  ---  (b) index-less adapters (jj): the view previously surfaced
+  ---      conflicts, i.e., a merge was actually resolved here (a resolved
+  ---      file stays in `working` as the resolution artifact, so an
+  ---      empty `working` bucket cannot be the gate).
+  ---If the guarded close aborts, set the retry flag so the next stage
+  ---save (via `buf_write_post`) re-evaluates.
   ---
   ---When `silent` is true, the dirty-stage gate is pre-checked and the close
   ---call is skipped if it would fail. The BufWritePost retry path uses this
@@ -35,9 +45,23 @@ return function(view)
       auto_close_pending = false
       return
     end
-    if #view.files.working ~= 0 or #view.files.conflicting ~= 0 then
+    if #view.files.conflicting ~= 0 then
       auto_close_pending = false
       return
+    end
+    -- See docstring: staging adapters gate on `working` empty; index-less
+    -- adapters gate on `had_conflicts` so an unrelated diff view doesn't
+    -- auto-close on the first save.
+    if view.adapter:has_staging() then
+      if #view.files.working ~= 0 then
+        auto_close_pending = false
+        return
+      end
+    else
+      if not had_conflicts then
+        auto_close_pending = false
+        return
+      end
     end
     if silent and #view:_modified_stage_paths() > 0 then
       auto_close_pending = true
@@ -145,6 +169,10 @@ return function(view)
       view.initialized = true
       -- File entries may be replaced on update; prune stale selections.
       view.panel:prune_selections()
+      -- Latch for the index-less branch of `maybe_auto_close`.
+      if #view.files.conflicting > 0 then
+        had_conflicts = true
+      end
     end,
     close = function()
       if view.panel:is_focused() then
@@ -322,7 +350,110 @@ return function(view)
       end
     end,
     toggle_stage_entry = function()
-      if not (view.left.type == RevType.STAGE and view.right.type == RevType.LOCAL) then
+      local right_is_local = view.right.type == RevType.LOCAL
+
+      -- Index-less adapters (jj): resolve by content instead of by staging.
+      -- Write the current entry's MERGED buffer to disk and advance; the
+      -- refresh observes it leave `conflicting` once the markers are gone,
+      -- and `auto_close_on_empty` handles the final close.
+      if not view.adapter:has_staging() then
+        if not (right_is_local and view.merge_ctx ~= nil) then
+          return
+        end
+        -- Use `cur_entry`, not `infer_cur_file`: the main window's MERGED
+        -- buffer belongs to the displayed entry, and a stale panel cursor
+        -- must not let us save one path while advancing from another.
+        local item = view.cur_entry
+        if not item or item.kind ~= "conflicting" then
+          return
+        end
+        -- Panel cursor on a different entry: no buffer for it is displayed,
+        -- so warn instead of silently writing `cur_entry`'s MERGED buffer.
+        if view.panel:is_focused() then
+          local hovered = view.panel:get_item_at_cursor()
+          if hovered and hovered ~= item then
+            utils.warn("Open the file to resolve its conflicts.")
+            return
+          end
+        end
+
+        local main = view.cur_layout and view.cur_layout:get_main_win()
+        if main and main:is_valid() and main.file and main.file:is_valid() then
+          local bufnr = main.file.bufnr
+          if bufnr and vim.bo[bufnr].modified then
+            api.nvim_buf_call(bufnr, function()
+              vim.cmd("silent update")
+            end)
+          end
+        end
+
+        -- Defer advance/close until after the refresh: keying off pre-refresh
+        -- state (like the git branch's `next_file`) would race with the close
+        -- policy when the resolved file was the last conflict.
+        local saved_path = item.path
+        -- Record the successor before refresh so mid-list resolution advances
+        -- downward rather than snapping to `conflicting[1]`.
+        local next_after_path
+        do
+          local seen_self = false
+          for _, e in ipairs(view.files.conflicting) do
+            if seen_self then
+              next_after_path = e.path
+              break
+            end
+            if e.path == saved_path then
+              seen_self = true
+            end
+          end
+        end
+        view:update_files(
+          nil,
+          vim.schedule_wrap(function()
+            local still_conflicting = false
+            for _, e in ipairs(view.files.conflicting) do
+              if e.path == saved_path then
+                still_conflicting = true
+                break
+              end
+            end
+            if not still_conflicting then
+              -- Prefer the pre-refresh successor; fall back to `conflicting[1]`
+              -- if it was resolved out-of-band or the resolved file was last.
+              local next_entry
+              if next_after_path then
+                for _, e in ipairs(view.files.conflicting) do
+                  if e.path == next_after_path then
+                    next_entry = e
+                    break
+                  end
+                end
+              end
+              next_entry = next_entry or view.files.conflicting[1]
+              if next_entry and view.cur_entry ~= next_entry then
+                view:set_file(next_entry, false, true)
+              end
+            end
+            view.panel:highlight_cur_file()
+            -- Wait for any in-flight `set_file` (`update_files` may schedule
+            -- one) to finish before letting `maybe_auto_close` run: tearing
+            -- down the layout mid-flight crashes `sync_scroll` on the freed
+            -- window ids.
+            local function close_when_idle()
+              local in_flight = view:set_file_in_flight()
+              if in_flight and not in_flight:is_done() then
+                vim.defer_fn(close_when_idle, 20)
+                return
+              end
+              maybe_auto_close()
+            end
+            close_when_idle()
+          end)
+        )
+        view.emitter:emit(EventName.FILES_STAGED, view)
+        return
+      end
+
+      if not (view.left.type == RevType.STAGE and right_is_local) then
         return
       end
 

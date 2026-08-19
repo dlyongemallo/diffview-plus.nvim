@@ -2099,6 +2099,10 @@ toggle_stage_entry                              *diffview-actions-toggle_stage_e
         Stage / unstage the subject. If files are selected (via
         `toggle_select_entry`), operates on all selected files.
 
+        On `jj` (no staging index), a conflict view instead writes the
+        current entry's MERGED buffer and advances to the next conflict;
+        pair with `auto_close_on_empty` to close after the last resolve.
+
 unstage_all                                     *diffview-actions-unstage_all*
         Contexts: `diff_view`, `file_panel`
 
@@ -2441,6 +2445,9 @@ C                       Clear all file selections.
                                                 *diffview-maps-toggle_stage_entry*
 -                       Stage/unstage the selected file entry. If files are
                         selected, operates on all selected files as a batch.
+                        On a `jj` conflict, writes the MERGED buffer to disk
+                        and advances to the next entry instead (see
+                        |diffview-actions-toggle_stage_entry|).
 
                                                 *diffview-maps-stage_all*
 S                       Stage all entries.

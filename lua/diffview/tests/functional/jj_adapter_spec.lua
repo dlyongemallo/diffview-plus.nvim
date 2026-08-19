@@ -23,9 +23,12 @@ describe("diffview.vcs.adapters.jj", function()
 
     JjAdapter.get_dir = old_get_dir
 
+    -- `parse_revs` queries `latest(@-)` (merge-safe); `file_restore` queries
+    -- bare `@-`. Map both to the same commit for the non-merge case.
     adapter._rev_map = {
       ["@"] = "head_hash",
       ["@-"] = "parent_hash",
+      ["latest(@-)"] = "parent_hash",
       ["root()"] = "root_hash",
       ["main"] = "main_hash",
       ["master"] = "master_hash",
@@ -132,7 +135,8 @@ describe("diffview.vcs.adapters.jj", function()
       local adapter = new_adapter()
       local left, right = adapter:parse_revs(nil, {})
 
-      adapter._rev_map["@-"] = "next_parent_hash"
+      -- `parse_revs`/`refresh_revs` query the wrapped form.
+      adapter._rev_map["latest(@-)"] = "next_parent_hash"
 
       local new_left, new_right = adapter:refresh_revs(nil, left, right)
       eq("next_parent_hash", new_left.commit)
@@ -477,6 +481,8 @@ describe("diffview.vcs.adapters.jj", function()
 
         eq(true, ok)
         eq(":!jj op undo", undo)
+        -- Bare `@-` (not `latest(@-)`) so a merge working copy fails loudly
+        -- instead of silently discarding content from one parent.
         eq({ "restore", "--from", "@-", "--", 'file:"src/main.lua"' }, captured_args)
       end)
     )
@@ -1312,6 +1318,59 @@ describe("diffview.vcs.adapters.jj", function()
           local d_rev = entry.layout.d.file.rev
           assert.is_not_nil(d_rev, "revs.d must not be nil (would crash Diff4 on layout open)")
           assert.equals(adapter.Rev.NULL_TREE_SHA, d_rev:object_name())
+        end)
+      )
+
+      it(
+        "returns nil when @ has a rebase-edit conflict with only a resolved merge in ancestry",
+        helpers.async_test(function()
+          if not jj_available() then
+            pending("jj not installed")
+            return
+          end
+
+          -- Build history:
+          --   root - A ----- M(resolved) - post - X
+          --      \- B ----/                    \- Y (rebased onto X)
+          -- @ = Y', which is a single-parent commit with a rebase-edit
+          -- conflict on `other.txt`. M is a merge in ancestors(@) but its
+          -- conflict was resolved, so it is not the source of @'s conflict.
+          -- Without the `& conflicts()` guard on the merge query, the code
+          -- would pick M and populate OURS/THEIRS with A/B (unrelated to
+          -- `other.txt`).
+          repo.write("file.txt", "root\n")
+          repo.jj({ "describe", "-m", "root" })
+          local root = repo.jj({ "log", "-r", "@", "--no-graph", "-T", "change_id.short()" })
+
+          repo.jj({ "new", root, "-m", "A" })
+          repo.write("file.txt", "A\n")
+          local a = repo.jj({ "log", "-r", "@", "--no-graph", "-T", "change_id.short()" })
+
+          repo.jj({ "new", root, "-m", "B" })
+          repo.write("file.txt", "B\n")
+          local b = repo.jj({ "log", "-r", "@", "--no-graph", "-T", "change_id.short()" })
+
+          repo.jj({ "new", a, b, "-m", "merge" })
+          repo.write("file.txt", "resolved\n")
+
+          repo.jj({ "new", "-m", "post" })
+          local post = repo.jj({ "log", "-r", "@", "--no-graph", "-T", "change_id.short()" })
+
+          repo.jj({ "new", post, "-m", "X" })
+          repo.write("other.txt", "X\n")
+          local x = repo.jj({ "log", "-r", "@", "--no-graph", "-T", "change_id.short()" })
+
+          repo.jj({ "new", post, "-m", "Y" })
+          repo.write("other.txt", "Y\n")
+          local y = repo.jj({ "log", "-r", "@", "--no-graph", "-T", "change_id.short()" })
+
+          repo.jj({ "rebase", "-s", y, "-d", x })
+          repo.jj({ "edit", y })
+
+          local adapter = repo.adapter()
+          local err, ctx = await(adapter:_query_merge_context())
+          assert.is_nil(err)
+          assert.is_nil(ctx)
         end)
       )
     end)
