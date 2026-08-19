@@ -579,12 +579,158 @@ local CONFLICT_BASE = [[^||||||| ]]
 local CONFLICT_SEP = [[^=======$]]
 local CONFLICT_END = [[^>>>>>>> ]]
 
+-- Jujutsu conflict markers. Both `ui.conflict-marker-style = "diff"` (the
+-- default) and `"snapshot"` share this outer frame:
+--   <<<<<<< conflict N of M
+--   ...one sub-block per side (and optionally the base)...
+--   >>>>>>> conflict N of M ends
+-- The lowercase "conflict" keyword distinguishes them from git's diff3
+-- markers above (`<<<<<<< HEAD`, `>>>>>>> branch`). Sub-blocks are:
+--   +++++++ <commit>   full snapshot of a side
+--   ------- <commit>   full snapshot of the base
+--   %%%%%%% diff from: <base>
+--   \\\\\\\        to: <side>   two-line header for a unified diff whose
+--                               `-`/`+`/` ` prefixed body lines describe a
+--                               side relative to base.
+-- See jj's `ui.conflict-marker-style` docs.
+local JJ_CONFLICT_START = [[^<<<<<<<%s+[Cc]onflict]]
+local JJ_CONFLICT_END = [[^>>>>>>>%s+[Cc]onflict]]
+local JJ_SNAPSHOT_SIDE = [[^%+%+%+%+%+%+%+%s]]
+local JJ_SNAPSHOT_BASE = [[^%-%-%-%-%-%-%-%s]]
+local JJ_DIFF_FROM = [[^%%%%%%%%%%%%%%%s+diff from:]]
+local JJ_DIFF_TO = [[^\\\\\\\]]
+
+---Peek forward from a `<<<<<<< conflict ...` header to distinguish a jj
+---conflict region from a git conflict whose branch label just happens to
+---start with "conflict" (e.g., `<<<<<<< conflict-fix`). Returns true iff
+---a jj sub-block marker (`+++++++`, `-------`, or `%%%%%%%`) appears
+---before the region's trailer, so callers can fall through to git
+---parsing when the region is git-shaped despite the ambiguous header.
+---@param lines string[]
+---@param start_idx integer Index of the `<<<<<<< conflict ...` header.
+---@return boolean
+local function looks_like_jj_region(lines, start_idx)
+  for j = start_idx + 1, #lines do
+    local line = lines[j]
+    if line:match(JJ_SNAPSHOT_SIDE) or line:match(JJ_SNAPSHOT_BASE) or line:match(JJ_DIFF_FROM) then
+      return true
+    elseif line:match(JJ_CONFLICT_END) or line:match(JJ_CONFLICT_START) then
+      return false
+    end
+  end
+  return false
+end
+
 ---@class ConflictRegion
 ---@field first integer
 ---@field last integer
 ---@field ours { first: integer, last: integer, content?: string[] }
 ---@field base { first: integer, last: integer, content?: string[] }
 ---@field theirs { first: integer, last: integer, content?: string[] }
+
+---Parse one Jujutsu conflict region beginning at `start_idx` (1-based, on
+---the `<<<<<<< conflict ...` line). Returns the assembled ConflictRegion
+---and the last line consumed (inclusive), or `nil` plus an advance point
+---when the region is unrepresentable in the 2-sided ours/base/theirs model
+---(3+ sides, no matching trailer, etc.).
+---@param lines string[]
+---@param start_idx integer
+---@return ConflictRegion? region
+---@return integer consumed_upto Last line index consumed (advance past this).
+local function parse_jj_region(lines, start_idx)
+  local sides = {} -- Ordered list of side contents (first = ours, second = theirs).
+  local base_content -- From an explicit `-------` snapshot block.
+  local base_from_diff -- Reconstructed from `%%%%%%%` diff blocks' `-` lines.
+
+  -- At most one of these accumulators is active at a time; their presence
+  -- also serves as the parser's "current block kind" state. `cur_diff_base`
+  -- collects the current `%%%%%%%` block's `-`/` ` lines separately so
+  -- multiple diff blocks against the same base don't concatenate.
+  local cur_snapshot -- Accumulator for the active `+++++++` or `-------` block.
+  local cur_diff_side -- Accumulator for `+` lines of the active `%%%%%%%` block.
+  local cur_diff_base -- Accumulator for `-`/` ` lines of the active `%%%%%%%` block.
+
+  local function flush()
+    if cur_diff_side then
+      sides[#sides + 1] = cur_diff_side
+      -- Every diff block reconstructs the same base, so keep the first.
+      base_from_diff = base_from_diff or cur_diff_base
+    end
+    cur_snapshot, cur_diff_side, cur_diff_base = nil, nil, nil
+  end
+
+  local i = start_idx + 1
+  local end_idx
+  while i <= #lines do
+    local line = lines[i]
+    if line:match(JJ_CONFLICT_END) then
+      flush()
+      end_idx = i
+      break
+    elseif line:match(JJ_SNAPSHOT_SIDE) then
+      flush()
+      cur_snapshot = {}
+      sides[#sides + 1] = cur_snapshot
+    elseif line:match(JJ_SNAPSHOT_BASE) then
+      flush()
+      base_content = base_content or {}
+      cur_snapshot = base_content
+    elseif line:match(JJ_DIFF_FROM) then
+      flush()
+      cur_diff_side = {}
+      cur_diff_base = {}
+      -- Consume the `\\\\\\\ ... to:` continuation, guarding in case a
+      -- future jj format drops it: without the guard we'd swallow the
+      -- first diff-body line.
+      if i + 1 <= #lines and lines[i + 1]:match(JJ_DIFF_TO) then
+        i = i + 1
+      end
+    elseif line:match(JJ_CONFLICT_START) then
+      -- Nested header without a trailer for the outer region: bail out
+      -- and let the outer loop restart parsing here.
+      flush()
+      return nil, i - 1
+    elseif cur_snapshot then
+      cur_snapshot[#cur_snapshot + 1] = line
+    elseif cur_diff_side then
+      local marker = line:sub(1, 1)
+      local rest = line:sub(2)
+      if marker == "-" then
+        cur_diff_base[#cur_diff_base + 1] = rest
+      elseif marker == "+" then
+        cur_diff_side[#cur_diff_side + 1] = rest
+      elseif marker == " " then
+        cur_diff_base[#cur_diff_base + 1] = rest
+        cur_diff_side[#cur_diff_side + 1] = rest
+      end
+    end
+    i = i + 1
+  end
+
+  if not end_idx then
+    -- No matching trailer; leave the header for the caller to reconsider
+    -- (it may still match the git state machine downstream).
+    return nil, start_idx
+  end
+
+  if #sides ~= 2 then
+    -- N-sided (or malformed) conflict: `ConflictRegion` can't represent it.
+    return nil, end_idx
+  end
+
+  local base = base_content or base_from_diff or {}
+  local region = {
+    first = start_idx,
+    last = end_idx,
+    -- Sub-range first/last are only read by the git branch's auto-slicer,
+    -- which we bypass here (`content` is set directly). Anchor them at
+    -- the outer bounds so any incidental consumer sees a valid range.
+    ours = { first = start_idx, last = end_idx, content = sides[1] },
+    base = { first = start_idx, last = end_idx, content = base },
+    theirs = { first = start_idx, last = end_idx, content = sides[2] },
+  }
+  return region, end_idx
+end
 
 ---@param lines string[]
 ---@param winid? integer
@@ -598,6 +744,18 @@ function M.parse_conflicts(lines, winid)
 
   if winid and api.nvim_win_is_valid(winid) then
     cursor = api.nvim_win_get_cursor(winid)
+  end
+
+  local function register(data)
+    if cursor then
+      if not cur_conflict and cursor[1] >= data.first and cursor[1] <= data.last then
+        cur_conflict = data
+        cur_idx = #ret + 1
+      elseif cursor[1] > data.last then
+        cur_idx = (cur_idx or 0) + 1
+      end
+    end
+    ret[#ret + 1] = data
   end
 
   local function handle(data)
@@ -629,18 +787,9 @@ function M.parse_conflicts(lines, winid)
       data.theirs.content = utils.vec_slice(lines, data.theirs.first + 1, data.theirs.last - 1)
     end
 
-    if cursor then
-      if not cur_conflict and cursor[1] >= first and cursor[1] <= last then
-        cur_conflict = data
-        cur_idx = #ret + 1
-      elseif cursor[1] > last then
-        cur_idx = (cur_idx or 0) + 1
-      end
-    end
-
     data.first = first
     data.last = last
-    ret[#ret + 1] = data
+    register(data)
   end
 
   local function new_cur()
@@ -653,8 +802,31 @@ function M.parse_conflicts(lines, winid)
 
   cur = new_cur()
 
+  -- `parse_jj_region` consumes multiple lines per hit, so we can't rely on
+  -- the loop's natural +1 step; `skip_until` records the last consumed
+  -- line so subsequent iterations no-op until we clear the region.
+  local skip_until = 0
+
   for i, line in ipairs(lines) do
-    if line:match(CONFLICT_START) then
+    if i <= skip_until then
+      goto continue
+    end
+    -- Try jj markers first: `JJ_CONFLICT_START` is a strict subset of the
+    -- git `CONFLICT_START` pattern (both start with `<<<<<<< `), so the
+    -- git branch would otherwise swallow a jj header. Gate on a peek for
+    -- jj sub-markers so a git branch named `conflict-*` still gets parsed
+    -- by the git state machine below instead of being silently dropped.
+    if line:match(JJ_CONFLICT_START) and looks_like_jj_region(lines, i) then
+      if has_start then
+        handle(cur)
+        cur, has_start, has_base, has_sep = new_cur(), false, false, false
+      end
+      local region, consumed = parse_jj_region(lines, i)
+      if region then
+        register(region)
+      end
+      skip_until = consumed
+    elseif line:match(CONFLICT_START) then
       if has_start then
         handle(cur)
         cur, has_start, has_base, has_sep = new_cur(), false, false, false
@@ -701,6 +873,7 @@ function M.parse_conflicts(lines, winid)
       handle(cur)
       cur, has_start, has_base, has_sep = new_cur(), false, false, false
     end
+    ::continue::
   end
 
   handle(cur)
