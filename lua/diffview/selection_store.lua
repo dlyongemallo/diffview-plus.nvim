@@ -65,29 +65,32 @@ local function write_store(path, data)
   end
 end
 
----Load selection keys for a given scope.
+---Load selections and hide state for a given scope.
 ---@param scope_key string
----@return string[]
+---@return string[] selection_keys
+---@return boolean hide
 function M.load(scope_key)
   local store = read_store(M.get_path())
   local scope = store[scope_key]
   if type(scope) == "table" and type(scope.selections) == "table" then
-    return scope.selections
+    return scope.selections, scope.hide == true
   end
-  return {}
+  return {}, false
 end
 
----Save selection keys for a given scope.
+---Save selection keys and hide state for a given scope.
 ---@param scope_key string
 ---@param selection_keys string[]
-function M.save(scope_key, selection_keys)
+---@param hide boolean?
+function M.save(scope_key, selection_keys, hide)
   local path = M.get_path()
   local store = read_store(path)
-  if #selection_keys == 0 then
+  if #selection_keys == 0 and not hide then
     store[scope_key] = nil
   else
     store[scope_key] = {
       selections = selection_keys,
+      hide = hide or false,
       timestamp = os.time(),
     }
   end

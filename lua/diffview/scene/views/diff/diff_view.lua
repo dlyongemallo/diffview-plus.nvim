@@ -339,10 +339,13 @@ function DiffView:_init_selection_events()
     local selection_store = require("diffview.selection_store")
     self._selection_scope_key = selection_store.scope_key(self.adapter.ctx.toplevel, self.rev_arg)
 
-    -- Load previously saved selections.
-    local saved = selection_store.load(self._selection_scope_key)
+    -- Load previously saved selections and hide state.
+    local saved, saved_hide = selection_store.load(self._selection_scope_key)
     for _, key in ipairs(saved) do
       self.panel.selected_files[key] = true
+    end
+    if saved_hide then
+      self.panel.hide_selected = true
     end
 
     -- Debounced save (500ms trailing).
@@ -361,7 +364,7 @@ function DiffView:_init_selection_events()
   end
 end
 
----Immediately persist current selections to disk.
+---Immediately persist current selections and hide state to disk.
 function DiffView:_save_selections_now()
   if not self._selection_scope_key then
     return
@@ -369,7 +372,7 @@ function DiffView:_save_selections_now()
   local selection_store = require("diffview.selection_store")
   local keys = vim.tbl_keys(self.panel.selected_files)
   table.sort(keys)
-  selection_store.save(self._selection_scope_key, keys)
+  selection_store.save(self._selection_scope_key, keys, self.panel.hide_selected)
 end
 
 ---Replace the revision range for this view in-place and refresh the file
@@ -411,10 +414,11 @@ function DiffView:set_revs(new_rev_arg, opts)
     -- If the new scope already has saved selections, merge them with the
     -- current in-memory set so nothing is lost.
     if old_scope ~= self._selection_scope_key then
-      local saved = selection_store.load(self._selection_scope_key)
+      local saved, saved_hide = selection_store.load(self._selection_scope_key)
       for _, key in ipairs(saved) do
         self.panel.selected_files[key] = true
       end
+      self.panel.hide_selected = saved_hide
 
       -- Persist under the new scope key so selections survive a restart.
       -- The update_files() machinery will trigger another save via

@@ -177,7 +177,7 @@ local conflict_keymaps = {
 ---@field large_file_threshold? integer Line count above which treesitter is disabled on non-LOCAL diff buffers. 0 disables this behaviour.
 ---@field diffopt? table Override `diffopt` while diffview is open. Restored on close.
 ---@field clean_up_buffers? boolean Delete file buffers created by diffview on close.
----@field persist_selections? DiffviewPersistSelectionsConfig.user Persist file selections across Neovim restarts.
+---@field persist_selections? DiffviewPersistSelectionsConfig.user Persist file selections and hide-reviewed state across Neovim restarts.
 ---@field restore_session? boolean Restore open Diffview/FileHistory views from a sourced Vim session.
 ---@field icons? DiffviewIcons.user Folder icons; only applies when `use_icons` is true.
 ---@field status_icons? DiffviewStatusIcons.user Icons for git status letters.
@@ -223,10 +223,10 @@ M.defaults = {
   ---@field path? string
 
   ---@class DiffviewPersistSelectionsConfig.user
-  ---@field enabled? boolean Persist file selections to disk across Neovim restarts.
+  ---@field enabled? boolean Persist file selections and hide-reviewed state across Neovim restarts.
   ---@field path? string Storage path. Nil uses `stdpath("data") .. "/diffview_selections.json"`.
   persist_selections = {
-    enabled = false, -- Persist file selections to disk across Neovim restarts.
+    enabled = false, -- Persist file selections and hide-reviewed state across Neovim restarts.
     path = nil, -- Storage path. Nil uses stdpath("data") .. "/diffview_selections.json".
   },
   restore_session = true, -- Restore open Diffview/FileHistory views from a sourced Vim session.

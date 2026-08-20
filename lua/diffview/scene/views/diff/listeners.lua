@@ -872,6 +872,8 @@ return function(view)
       view.panel:redraw()
       local state = view.panel.hide_selected and "hidden" or "shown"
       utils.info(("Reviewed files: %s"):format(state))
+      -- Persist the new hide state immediately (if persistence is enabled).
+      view:_save_selections_now()
     end,
   }
 end
