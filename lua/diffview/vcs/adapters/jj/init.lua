@@ -519,7 +519,10 @@ function JjAdapter:parse_revs(rev_arg, opt)
   local right
 
   if not rev_arg then
-    local parent_hash = self:resolve_rev_arg("@-") or self:resolve_rev_arg("root()")
+    -- Wrap `@-` in `latest(...)` so a merge working copy (2+ parents) picks
+    -- the most-recent parent instead of erroring on "resolved to more than
+    -- one revision". Non-merge cases collapse back to `@-`.
+    local parent_hash = self:resolve_rev_arg("latest(@-)") or self:resolve_rev_arg("root()")
     left = parent_hash and JjRev(RevType.COMMIT, parent_hash) or JjRev.new_null_tree()
     right = JjRev(RevType.LOCAL)
   elseif rev_arg:match("%.%.%.") then
@@ -1588,10 +1591,15 @@ local function filter_conflict_paths(ctx, path_args)
   }
 end
 
----Query the working copy for a 2-sided merge conflict context. Returns nil
----for non-conflicts and for merges with 0, 1, or 3+ parents (the
----OURS/THEIRS/BASE slots in `vcs.MergeContext` can't represent them); N-way
----conflicts log a warning to `:DiffviewLog` before returning nil.
+---Query the working copy for a 2-sided merge conflict context. Locates the
+---nearest still-conflicted ancestor merge of `@` (which is `@` itself when
+---the working copy is the merge) and derives OURS/THEIRS from its parents;
+---this covers the common propagated-conflict shape where `@` is a linear
+---descendant of a conflicted merge (e.g., after `jj new` on top of an
+---unresolved merge). Returns nil for non-conflicts, for conflicts with no
+---conflicted merge ancestor (rebase-only edit conflicts, where no ancestor
+---merge is the source), and for merges with 3+ parents; the last two log a
+---warning to `:DiffviewLog`.
 ---@param self JjAdapter
 ---@param callback fun(err: string[]?, ctx: JjAdapter.MergeContextData?)
 JjAdapter._query_merge_context = async.wrap(function(self, callback)
@@ -1617,27 +1625,52 @@ JjAdapter._query_merge_context = async.wrap(function(self, callback)
     return
   end
 
-  -- `parents.map(...)` iterates in positional order, so index 1 is OURS,
-  -- index 2 is THEIRS.
-  local parents_job = log_job(
+  -- Locate the nearest still-conflicted ancestor merge and read its parents
+  -- in one call. `ancestors(@)` includes `@` itself, so a working-copy-as-
+  -- merge still resolves to itself; `& conflicts()` restricts to merges whose
+  -- conflicts are the source of `@`'s (a resolved ancient merge in ancestry
+  -- wouldn't propagate conflicts, so its OURS/THEIRS would be unrelated to
+  -- the current conflict and mislead the 3-way layout); `latest(..., 1)`
+  -- picks the most recent such merge and guards against multi-commit output
+  -- clobbering the fixed layout below. Template line 1 is the merge's
+  -- `commit_id`; lines 2+ are its parents in positional order (index 1
+  -- OURS, index 2 THEIRS).
+  local merge_job = log_job(
     self,
-    "@",
-    [[parents.map(|c| c.commit_id()).join("\n")]],
-    "JjAdapter:_query_merge_context() parents"
+    "latest(ancestors(@) & merges() & conflicts(), 1)",
+    [[commit_id ++ "\n" ++ parents.map(|c| c.commit_id()).join("\n")]],
+    "JjAdapter:_query_merge_context() merge"
   )
-  if not await(parents_job) or parents_job.code ~= 0 then
-    callback(parents_job.stderr or {}, nil)
+  if not await(merge_job) or merge_job.code ~= 0 then
+    callback(merge_job.stderr or {}, nil)
     return
   end
 
-  local parents = vim.tbl_filter(function(s)
+  local lines = vim.tbl_filter(function(s)
     return s ~= ""
-  end, parents_job.stdout)
+  end, merge_job.stdout)
+  if #lines == 0 then
+    logger:warn(
+      fmt(
+        "[JjAdapter] Skipping merge-tool layout for %d conflicted file(s): "
+          .. "no ancestor merge found (conflict has no 2-sided source).",
+        #paths
+      )
+    )
+    callback(nil, nil)
+    return
+  end
+
+  local merge_id = lines[1]
+  local parents = {}
+  for i = 2, #lines do
+    parents[#parents + 1] = lines[i]
+  end
   if #parents ~= 2 then
     logger:warn(
       fmt(
         "[JjAdapter] Skipping merge-tool layout for %d conflicted file(s): "
-          .. "working copy has %d parent(s), only 2-sided merges are supported.",
+          .. "nearest ancestor merge has %d parents, only 2-sided merges are supported.",
         #paths,
         #parents
       )
@@ -1648,12 +1681,19 @@ JjAdapter._query_merge_context = async.wrap(function(self, callback)
 
   local ctx = { paths = paths, ours = parents[1], theirs = parents[2] }
 
-  -- `latest(fork_point(@-), 1)` matches the sibling pattern at
-  -- `symmetric_diff_revs`: bare `fork_point(@-)` can resolve to multiple
-  -- commits in a criss-cross merge, and `commit_id` templates would
-  -- concatenate them into a garbage 80+ char string without `latest(..., 1)`.
-  local base_job =
-    log_job(self, "latest(fork_point(@-), 1)", "commit_id", "JjAdapter:_query_merge_context() base")
+  -- Anchor `fork_point` at the merge's parents, not `@-`: when `@` is a
+  -- descendant of the merge, `@-` is a single commit and `fork_point(@-)`
+  -- yields that commit itself, not the merge's base. `latest(..., 1)`
+  -- matches the sibling pattern at `symmetric_diff_revs`: bare
+  -- `fork_point(...)` can resolve to multiple commits in a criss-cross
+  -- merge, and `commit_id` templates would concatenate them into a garbage
+  -- 80+ char string without the guard.
+  local base_job = log_job(
+    self,
+    fmt("latest(fork_point(%s-), 1)", merge_id),
+    "commit_id",
+    "JjAdapter:_query_merge_context() base"
+  )
   if await(base_job) and base_job.code == 0 and base_job.stdout[1] and base_job.stdout[1] ~= "" then
     ctx.base = base_job.stdout[1]
   end
@@ -1900,9 +1940,14 @@ JjAdapter.file_restore = async.wrap(function(self, path, kind, commit, callback)
     return
   end
 
-  -- `jj restore --from <commit> -- <path>` rewrites the working copy from the
-  -- source commit. When `commit` is nil this defaults to `@-` (the parent),
-  -- which matches "discard local changes" semantics.
+  -- `jj restore --from <commit> -- <path>` rewrites the working copy from
+  -- the source commit. When `commit` is nil this defaults to `@-` (the
+  -- parent). Do NOT wrap in `latest(...)` here: on a merge working copy
+  -- `@-` is ambiguous by design, and picking one parent silently would
+  -- discard content from the other side, potentially destroying an
+  -- in-progress conflict resolution. Let jj surface the ambiguity as a
+  -- loud error instead; callers that need a specific side must pass
+  -- `commit` explicitly.
   local from = commit or "@-"
   local abs_path = pl:join(self.ctx.toplevel, path)
   local _, code, stderr = self:exec_sync(
@@ -1948,6 +1993,11 @@ function JjAdapter:stage_index_file(file) ---@diagnostic disable-line: unused-lo
     "Jujutsu has no staging index; staging-related operations are not supported."
   )
   return true
+end
+
+---@return boolean
+function JjAdapter:has_staging()
+  return false
 end
 
 ---@param paths string[]?

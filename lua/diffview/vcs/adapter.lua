@@ -540,6 +540,14 @@ function VCSAdapter:restore_file(path, kind, commit)
   oop.abstract_stub()
 end
 
+---Whether the adapter has a staging index (git/hg: true, jj: false). Consumers
+---gate stage/unstage UI and choose between index-based staging and content-based
+---resolution off this.
+---@return boolean
+function VCSAdapter:has_staging()
+  return true
+end
+
 ---Add file(s)
 ---@param paths string[]
 ---@return boolean # add was successful

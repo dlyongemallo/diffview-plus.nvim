@@ -450,6 +450,9 @@ describe("diffview.scene.views.diff.DiffView", function()
           has_local = function()
             return true
           end,
+          has_staging = function()
+            return true
+          end,
         },
         left = {},
         right = {},

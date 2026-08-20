@@ -445,6 +445,14 @@ function StandardView:_set_file(file)
   return self._set_file_in_flight
 end
 
+---The currently-running `_set_file` worker, or `nil` if none is outstanding.
+---Exposed so external policy code (e.g., `maybe_auto_close`) can defer teardown
+---until a queued file swap has finished, without reaching into `_set_file_in_flight`.
+---@return Future?
+function StandardView:set_file_in_flight()
+  return self._set_file_in_flight
+end
+
 ---@param self StandardView
 StandardView._drain_set_file_pending = async.void(function(self)
   while self._set_file_pending do

@@ -239,7 +239,19 @@ describe("diffview.actions._is_applicable", function()
 
   local make_view = function(opts)
     opts = opts or {}
-    local v = { merge_ctx = opts.merge_ctx and {} or nil }
+    -- Defaults to a staging-model adapter; pass `has_staging = false` for jj-like.
+    local has_staging = opts.has_staging
+    if has_staging == nil then
+      has_staging = true
+    end
+    local v = {
+      merge_ctx = opts.merge_ctx and {} or nil,
+      adapter = {
+        has_staging = function()
+          return has_staging
+        end,
+      },
+    }
     if opts.left then
       v.left = { type = opts.left }
     end
@@ -289,35 +301,84 @@ describe("diffview.actions._is_applicable", function()
     assert.is_false(actions._is_applicable(actions.next_conflict, nil))
   end)
 
-  it("shows `working_tree_only` actions when comparing STAGE against LOCAL", function()
+  it("shows `stage_or_resolve` actions when comparing STAGE against LOCAL", function()
     local view = make_view({ left = RevType.STAGE, right = RevType.LOCAL })
     assert.is_true(actions._is_applicable(actions.toggle_stage_entry, view))
+  end)
+
+  it("shows `working_tree_only` actions when comparing STAGE against LOCAL", function()
+    local view = make_view({ left = RevType.STAGE, right = RevType.LOCAL })
     assert.is_true(actions._is_applicable(actions.stage_all, view))
     assert.is_true(actions._is_applicable(actions.unstage_all, view))
   end)
 
-  it("hides `working_tree_only` actions when comparing two commits", function()
+  it("hides staging actions when comparing two commits", function()
     local view = make_view({ left = RevType.COMMIT, right = RevType.COMMIT })
     assert.is_false(actions._is_applicable(actions.toggle_stage_entry, view))
     assert.is_false(actions._is_applicable(actions.stage_all, view))
     assert.is_false(actions._is_applicable(actions.unstage_all, view))
   end)
 
-  it("hides `working_tree_only` actions when right side is not LOCAL", function()
+  it("hides `stage_or_resolve` (staging adapter) when right side is not LOCAL", function()
     local view = make_view({ left = RevType.STAGE, right = RevType.COMMIT })
     assert.is_false(actions._is_applicable(actions.toggle_stage_entry, view))
   end)
 
-  it("hides `working_tree_only` actions when left side is not STAGE", function()
-    local view = make_view({ left = RevType.COMMIT, right = RevType.LOCAL })
+  it("hides `stage_or_resolve` (staging adapter) when left side is not STAGE", function()
+    -- Staging adapter in a mid-merge non-STAGE view (e.g., `:DiffviewOpen HEAD`
+    -- during a git merge) must not fall into the resolve branch.
+    local view = make_view({ left = RevType.COMMIT, right = RevType.LOCAL, merge_ctx = true })
     assert.is_false(actions._is_applicable(actions.toggle_stage_entry, view))
   end)
 
-  it("hides `working_tree_only` actions when view lacks left/right (non-DiffView)", function()
+  it("hides staging actions when view lacks left/right (non-DiffView)", function()
     assert.is_false(actions._is_applicable(actions.toggle_stage_entry, make_view()))
+    assert.is_false(actions._is_applicable(actions.stage_all, make_view()))
   end)
 
-  it("returns false when view is nil and the action is `working_tree_only`", function()
+  it("returns false when view is nil and the action needs view state", function()
     assert.is_false(actions._is_applicable(actions.toggle_stage_entry, nil))
+    assert.is_false(actions._is_applicable(actions.stage_all, nil))
+  end)
+
+  it("shows `stage_or_resolve` on no-staging adapter with LOCAL right + merge_ctx", function()
+    local view = make_view({
+      left = RevType.COMMIT,
+      right = RevType.LOCAL,
+      merge_ctx = true,
+      has_staging = false,
+    })
+    assert.is_true(actions._is_applicable(actions.toggle_stage_entry, view))
+  end)
+
+  it("hides `stage_or_resolve` on no-staging adapter without merge_ctx", function()
+    local view = make_view({
+      left = RevType.COMMIT,
+      right = RevType.LOCAL,
+      has_staging = false,
+    })
+    assert.is_false(actions._is_applicable(actions.toggle_stage_entry, view))
+  end)
+
+  it("hides `stage_or_resolve` on no-staging adapter when right is not LOCAL", function()
+    local view = make_view({
+      left = RevType.COMMIT,
+      right = RevType.COMMIT,
+      merge_ctx = true,
+      has_staging = false,
+    })
+    assert.is_false(actions._is_applicable(actions.toggle_stage_entry, view))
+  end)
+
+  it("hides `working_tree_only` (stage_all/unstage_all) on no-staging adapters", function()
+    -- Even in a mid-merge no-staging view, index-only actions have no target.
+    local view = make_view({
+      left = RevType.COMMIT,
+      right = RevType.LOCAL,
+      merge_ctx = true,
+      has_staging = false,
+    })
+    assert.is_false(actions._is_applicable(actions.stage_all, view))
+    assert.is_false(actions._is_applicable(actions.unstage_all, view))
   end)
 end)
