@@ -78,9 +78,41 @@ describe("diffview.config default keymaps", function()
     assert.truthy(find_keymap(keymaps.file_panel, "s"))
     assert.falsy(find_keymap(keymaps.file_history_panel, "s"))
 
+    -- "H" toggles reviewed-file visibility only in the file panel.
+    local hide_map = find_keymap(keymaps.file_panel, "H")
+    assert.truthy(hide_map)
+    assert.equals(config.actions.toggle_hide_selected, hide_map[3])
+    assert.equals("Toggle hiding reviewed (selected) files", hide_map[4].desc)
+
     -- "g!" (options) is file_history_panel-only.
     assert.truthy(find_keymap(keymaps.file_history_panel, "g!"))
     assert.falsy(find_keymap(keymaps.file_panel, "g!"))
+  end)
+
+  it("allows the hide-reviewed mapping to be changed", function()
+    local original = vim.deepcopy(config.get_config())
+    local ok, err = pcall(function()
+      config.setup({
+        keymaps = {
+          file_panel = {
+            ["H"] = false,
+            { "n", "<leader>h", config.actions.toggle_hide_selected },
+          },
+        },
+      })
+
+      local keymaps = config.get_config().keymaps.file_panel
+      assert.falsy(find_keymap(keymaps, "H"))
+
+      local replacement = find_keymap(keymaps, "<leader>h")
+      assert.truthy(replacement)
+      assert.equals(config.actions.toggle_hide_selected, replacement[3])
+    end)
+
+    config.setup(original)
+    if not ok then
+      error(err)
+    end
   end)
 
   it("conflict keymaps live on the merge-tool layouts, not the view section", function()

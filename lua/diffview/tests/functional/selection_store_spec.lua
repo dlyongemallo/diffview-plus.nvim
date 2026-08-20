@@ -74,6 +74,52 @@ describe("diffview.selection_store", function()
       eq({}, SelectionStore.load(scope))
     end)
 
+    it("defaults hide to false for a fresh load", function()
+      local _, hide = SelectionStore.load("nonexistent:scope")
+      eq(false, hide)
+    end)
+
+    it("round-trips the hide flag alongside selections", function()
+      local scope = "/repo:HEAD"
+      SelectionStore.save(scope, { "working:a.lua" }, true)
+
+      local loaded, hide = SelectionStore.load(scope)
+      eq({ "working:a.lua" }, loaded)
+      eq(true, hide)
+    end)
+
+    it("keeps the scope when hide is true even with no selections", function()
+      local scope = "/repo:"
+      SelectionStore.save(scope, {}, true)
+
+      local loaded, hide = SelectionStore.load(scope)
+      eq({}, loaded)
+      eq(true, hide)
+    end)
+
+    it("clears the scope only when selections are empty and hide is false", function()
+      local scope = "/repo:"
+      SelectionStore.save(scope, { "working:a.lua" }, true)
+      eq(true, (select(2, SelectionStore.load(scope))))
+
+      -- Empty selections but hide still on: scope must survive.
+      SelectionStore.save(scope, {}, true)
+      eq(true, (select(2, SelectionStore.load(scope))))
+
+      -- Both empty/off: scope is removed and hide resets to the default.
+      SelectionStore.save(scope, {}, false)
+      local loaded, hide = SelectionStore.load(scope)
+      eq({}, loaded)
+      eq(false, hide)
+    end)
+
+    it("treats a missing hide field as false (backward compat)", function()
+      local scope = "/repo:"
+      -- Saving without the hide arg must not persist hide=true.
+      SelectionStore.save(scope, { "working:a.lua" })
+      eq(false, (select(2, SelectionStore.load(scope))))
+    end)
+
     it("handles corrupt file gracefully", function()
       local path = tmpdir .. "/test_selections.json"
       vim.fn.writefile({ "not valid json{{{" }, path)
@@ -260,6 +306,148 @@ describe("diffview.selection_store", function()
       panel.files = make_mock_files({ a })
       panel:prune_selections()
       eq(1, called)
+    end)
+  end)
+
+  describe("hide_selected filtering", function()
+    local FilePanel = require("diffview.scene.views.diff.file_panel").FilePanel
+
+    -- Mock `files` object exposing both the iterator used by ordered_file_list
+    -- and the per-kind buckets used by count_visible().
+    local function make_mock_files(entries)
+      local all = entries or {}
+      local files = { conflicting = {}, working = {}, staged = {} }
+      for _, f in ipairs(all) do
+        local bucket = files[f.kind]
+        if bucket then
+          bucket[#bucket + 1] = f
+        end
+      end
+      function files:iter()
+        local i = 0
+        return function()
+          i = i + 1
+          if i <= #all then
+            return i, all[i]
+          end
+        end
+      end
+      function files:len()
+        return #all
+      end
+      return files
+    end
+
+    local function make_panel(entries)
+      local adapter = { ctx = { toplevel = "/tmp", dir = "/tmp/.git" } }
+      local panel = FilePanel(adapter, make_mock_files(entries), {})
+      -- Force list mode so ordered_file_list() uses the flat iterator and we
+      -- don't need to build tree structures.
+      panel.listing_style = "list"
+      return panel
+    end
+
+    it("defaults to disabled", function()
+      local panel = make_panel({})
+      eq(false, panel.hide_selected)
+    end)
+
+    it("toggle_hide_selected flips the flag", function()
+      local panel = make_panel({})
+      panel:toggle_hide_selected()
+      eq(true, panel.hide_selected)
+      panel:toggle_hide_selected()
+      eq(false, panel.hide_selected)
+    end)
+
+    it("ordered_file_list keeps all files when disabled", function()
+      local a = { path = "a.lua", kind = "working" }
+      local b = { path = "b.lua", kind = "working" }
+      local panel = make_panel({ a, b })
+      panel:select_file(a)
+
+      eq({ a, b }, panel:ordered_file_list())
+    end)
+
+    it("ordered_file_list omits selected files when enabled", function()
+      local a = { path = "a.lua", kind = "working" }
+      local b = { path = "b.lua", kind = "working" }
+      local panel = make_panel({ a, b })
+      panel:select_file(a)
+      panel.hide_selected = true
+
+      eq({ b }, panel:ordered_file_list())
+    end)
+
+    it("toggling hide back reveals previously hidden files", function()
+      local a = { path = "a.lua", kind = "working" }
+      local b = { path = "b.lua", kind = "working" }
+      local panel = make_panel({ a, b })
+      panel:select_file(a)
+
+      panel.hide_selected = true
+      eq({ b }, panel:ordered_file_list())
+
+      panel.hide_selected = false
+      eq({ a, b }, panel:ordered_file_list())
+    end)
+
+    it("count_hidden counts selected files regardless of kind", function()
+      local a = { path = "a.lua", kind = "working" }
+      local b = { path = "b.lua", kind = "staged" }
+      local c = { path = "c.lua", kind = "working" }
+      local panel = make_panel({ a, b, c })
+
+      eq(0, panel:count_hidden())
+      panel:select_file(a)
+      panel:select_file(b)
+      eq(2, panel:count_hidden())
+    end)
+
+    it("count_visible returns total/total when filter is off", function()
+      local a = { path = "a.lua", kind = "working" }
+      local b = { path = "b.lua", kind = "working" }
+      local panel = make_panel({ a, b })
+      panel:select_file(a)
+
+      local visible, total = panel:count_visible("working")
+      eq(2, visible)
+      eq(2, total)
+    end)
+
+    it("count_visible subtracts hidden files when filter is on", function()
+      local a = { path = "a.lua", kind = "working" }
+      local b = { path = "b.lua", kind = "working" }
+      local c = { path = "c.lua", kind = "working" }
+      local panel = make_panel({ a, b, c })
+      panel:select_file(a)
+      panel:select_file(b)
+      panel.hide_selected = true
+
+      local visible, total = panel:count_visible("working")
+      eq(1, visible)
+      eq(3, total)
+    end)
+
+    it("count_visible is per-kind", function()
+      local w = { path = "w.lua", kind = "working" }
+      local s = { path = "s.lua", kind = "staged" }
+      local panel = make_panel({ w, s })
+      panel:select_file(s)
+      panel.hide_selected = true
+
+      eq(1, (panel:count_visible("working")))
+
+      local vis_s, tot_s = panel:count_visible("staged")
+      eq(0, vis_s)
+      eq(1, tot_s)
+    end)
+
+    it("count_visible returns 0,0 for an unknown kind", function()
+      local panel = make_panel({})
+      local visible, total = panel:count_visible("conflicting")
+      eq(0, visible)
+      eq(0, total)
     end)
   end)
 end)
