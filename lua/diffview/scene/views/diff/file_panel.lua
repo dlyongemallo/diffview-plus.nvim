@@ -19,6 +19,7 @@ local M = {}
 ---@field constrain_cursor function
 ---@field help_mapping string
 ---@field selected_files table<string, true>
+---@field hide_selected boolean
 ---@field on_selection_changed fun(selected_files: table<string, true>)?
 local FilePanel = oop.create_class("FilePanel", Panel)
 
@@ -57,6 +58,7 @@ function FilePanel:init(adapter, files, path_args, rev_pretty_name)
   self.listing_style = conf.file_panel.listing_style
   self.tree_options = conf.file_panel.tree_options
   self.selected_files = {}
+  self.hide_selected = false
   self.is_loading = true
 
   self:on_autocmd("BufNew", {
@@ -144,6 +146,7 @@ function FilePanel:update_components()
       staged_files,
       { name = "margin" },
     },
+    { name = "hidden_hint" },
     {
       name = "info",
       { name = "title" },
@@ -164,7 +167,9 @@ function FilePanel:ordered_file_list()
     local list = {}
 
     for _, file in self.files:iter() do
-      list[#list + 1] = file
+      if not (self.hide_selected and self:is_selected(file)) then
+        list[#list + 1] = file
+      end
     end
 
     return list
@@ -175,10 +180,53 @@ function FilePanel:ordered_file_list()
       self.files.staged_tree.root:leaves()
     )
 
-    return vim.tbl_map(function(node)
-      return node.data
-    end, nodes) --[[@as vector ]]
+    local result = {}
+    for _, node in ipairs(nodes) do
+      if node.data and not (self.hide_selected and self:is_selected(node.data)) then
+        result[#result + 1] = node.data
+      end
+    end
+    return result --[[@as vector ]]
   end
+end
+
+---Toggle the hide-selected filter.
+---When active, marked (reviewed) files are hidden from the file panel.
+function FilePanel:toggle_hide_selected()
+  self.hide_selected = not self.hide_selected
+end
+
+---Count files currently hidden by the hide-selected filter.
+---@return integer
+function FilePanel:count_hidden()
+  local count = 0
+  for _, file in self.files:iter() do
+    if self:is_selected(file) then
+      count = count + 1
+    end
+  end
+  return count
+end
+
+---Count visible (non-hidden) files for a given kind.
+---@param kind "conflicting"|"working"|"staged"
+---@return integer visible, integer total
+function FilePanel:count_visible(kind)
+  local files = self.files[kind]
+  if not files then
+    return 0, 0
+  end
+  local total = #files
+  if not self.hide_selected then
+    return total, total
+  end
+  local hidden = 0
+  for _, file in ipairs(files) do
+    if self:is_selected(file) then
+      hidden = hidden + 1
+    end
+  end
+  return total - hidden, total
 end
 
 function FilePanel:set_cur_file(file)

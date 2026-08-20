@@ -249,6 +249,9 @@ return function(view)
 
         -- Exit visual mode.
         api.nvim_feedkeys(api.nvim_replace_termcodes("<Esc>", true, false, true), "n", false)
+        if view.panel.hide_selected then
+          view.panel:update_components()
+        end
         view.panel:render()
         view.panel:redraw()
         return
@@ -260,42 +263,113 @@ return function(view)
         return
       end
 
+      -- Resolve the affected leaves and whether this toggle will SELECT (hide)
+      -- or DESELECT (reveal) them. A directory selects-all unless every child
+      -- is already selected, in which case it deselects-all.
+      local leaves = {} ---@type FileEntry[]
       if type(item.collapsed) == "boolean" then
-        -- Directory: select all if any child is unselected, else deselect all.
         ---@cast item DirData
         local node = item._node
         if not node then
           return
         end
-
-        local leaves = node:leaves()
-        local all_selected = true
-        for _, leaf in ipairs(leaves) do
-          if leaf.data and not view.panel:is_selected(leaf.data) then
-            all_selected = false
-            break
+        for _, leaf in ipairs(node:leaves()) do
+          if leaf.data then
+            leaves[#leaves + 1] = leaf.data
           end
         end
+      else
+        leaves[1] = item --[[@as FileEntry]]
+      end
 
-        view.panel:batch_selection(function()
-          for _, leaf in ipairs(leaves) do
-            if leaf.data then
-              if all_selected then
-                view.panel:deselect_file(leaf.data)
-              else
-                view.panel:select_file(leaf.data)
+      local will_hide = false
+      for _, f in ipairs(leaves) do
+        if not view.panel:is_selected(f) then
+          will_hide = true -- at least one unselected -> this toggle selects
+          break
+        end
+      end
+
+      -- In hide mode, pre-compute which file the diff should show afterward,
+      -- while the affected files are still present in ordered_file_list().
+      local target ---@type FileEntry?
+      if view.panel.hide_selected then
+        if will_hide then
+          -- The affected files vanish on render. Land on the nearest file that
+          -- stays visible (searching forward, then backward), skipping the
+          -- hidden set so we never land on a sibling that is also disappearing.
+          local files = view.panel:ordered_file_list()
+          local hidden = {} ---@type table<table, true>
+          for _, f in ipairs(leaves) do
+            hidden[f] = true
+          end
+          local anchor = leaves[#leaves] -- last affected file in display order
+          local idx = anchor and utils.vec_indexof(files, anchor) or -1
+          if idx ~= -1 then
+            for i = idx + 1, #files do
+              if not hidden[files[i]] then
+                target = files[i]
+                break
+              end
+            end
+            if not target then
+              for i = idx - 1, 1, -1 do
+                if not hidden[files[i]] then
+                  target = files[i]
+                  break
+                end
               end
             end
           end
-        end)
-      else
-        ---@cast item FileEntry
-        view.panel:toggle_selection(item)
+        else
+          -- Unview: the toggled item reappears in the panel; show it in the
+          -- diff rather than jumping elsewhere.
+          target = leaves[1]
+        end
       end
 
-      view.panel:render()
-      view.panel:redraw()
-      view.panel:highlight_next_file()
+      view.panel:batch_selection(function()
+        for _, f in ipairs(leaves) do
+          if will_hide then
+            view.panel:select_file(f)
+          else
+            view.panel:deselect_file(f)
+          end
+        end
+      end)
+
+      if view.panel.hide_selected then
+        -- Rebuild the component tree so hidden/revealed files are in sync.
+        view.panel:update_components()
+        view.panel:render()
+        view.panel:redraw()
+        if target then
+          -- Open the target in the diff so the view never lingers on a file
+          -- that just disappeared. set_file() also syncs cur_file + highlight,
+          -- so <tab>/<s-tab> navigate from what's actually displayed (no
+          -- skipped entry). focus=false keeps the cursor in the panel;
+          -- highlight=true moves the panel cursor onto the opened entry.
+          view:set_file(target, false, true)
+        end
+      else
+        view.panel:render()
+        view.panel:redraw()
+        if will_hide then
+          -- Viewing: advance to the next entry (established behaviour).
+          view.panel:highlight_next_file()
+          -- Sync cur_file with the cursor's new position so that <tab>/<s-tab>
+          -- navigate from where the cursor landed, not from the previously opened file.
+          local next_item = view.panel:get_item_at_cursor()
+          if next_item and type(next_item.collapsed) ~= "boolean" then
+            view.panel:set_cur_file(next_item --[[@as FileEntry]])
+          end
+        else
+          -- Unviewing: open the just-unmarked file in the diff and keep the
+          -- cursor on it (set_file syncs cur_file + highlight, focus stays in
+          -- the panel).
+          view:set_file(leaves[1], false, true)
+        end
+      end
     end,
     clear_select_entries = function()
       if not view.panel:is_open() then
@@ -787,6 +861,17 @@ return function(view)
       if dir then
         view.panel:toggle_item_fold(dir)
       end
+    end,
+    toggle_hide_selected = function()
+      if not view.panel:is_focused() then
+        return
+      end
+      view.panel:toggle_hide_selected()
+      view.panel:update_components()
+      view.panel:render()
+      view.panel:redraw()
+      local state = view.panel.hide_selected and "hidden" or "shown"
+      utils.info(("Reviewed files: %s"):format(state))
     end,
   }
 end

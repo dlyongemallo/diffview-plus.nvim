@@ -71,6 +71,7 @@ local pl = lazy.access(utils, "path") --[[@as PathLib ]]
 ---@field toggle_fold fun()
 ---@field toggle_select_entry fun()
 ---@field clear_select_entries fun()
+---@field toggle_hide_selected fun()
 ---@field toggle_stage_entry fun()
 ---@field toggle_untracked fun()
 ---@field unstage_all fun()
@@ -1272,6 +1273,7 @@ local action_names = {
   "clear_select_entries",
   "toggle_stage_entry",
   "toggle_untracked",
+  "toggle_hide_selected",
   "unstage_all",
 }
 

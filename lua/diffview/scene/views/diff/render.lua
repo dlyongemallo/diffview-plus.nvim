@@ -71,6 +71,29 @@ local function render_folder_count(comp, node, tree_options)
   end
 end
 
+---Return true when every file leaf under a directory component is hidden.
+---@param panel FilePanel
+---@param comp RenderComponent
+---@return boolean
+local function dir_all_hidden(panel, comp)
+  local items = comp.components[2]
+  if not items then
+    return true
+  end
+  for _, child in ipairs(items.components) do
+    if child.name == "file" then
+      if not panel:is_selected(child.context) then
+        return false
+      end
+    elseif child.name == "directory" then
+      if not dir_all_hidden(panel, child) then
+        return false
+      end
+    end
+  end
+  return true
+end
+
 ---@param conf DiffviewConfig
 ---@param panel FilePanel
 ---@param comp  RenderComponent
@@ -80,6 +103,10 @@ end
 local function render_file(conf, panel, comp, show_path, depth, sign_pad)
   ---@type FileEntry
   local file = comp.context
+
+  if panel.hide_selected and panel:is_selected(file) then
+    return
+  end
 
   local show_marks = conf.file_panel.mark_placement ~= "sign_column"
     and (conf.file_panel.always_show_marks or panel:has_any_selections())
@@ -181,6 +208,10 @@ local function render_file_tree_recurse(conf, panel, depth, comp, sign_pad)
   end
 
   if comp.name ~= "directory" then
+    return
+  end
+
+  if panel.hide_selected and dir_all_hidden(panel, comp) then
     return
   end
 
@@ -427,7 +458,10 @@ local function render_panel(panel)
   if #panel.files.conflicting > 0 then
     comp = panel.components.conflicting.title.comp
     comp:add_text("Conflicts ", "DiffviewFilePanelTitle")
-    comp:add_text("(" .. #panel.files.conflicting .. ")", "DiffviewFilePanelCounter")
+    local vis_c, tot_c = panel:count_visible("conflicting")
+    local count_c = (panel.hide_selected and vis_c < tot_c) and (vis_c .. "/" .. tot_c)
+      or tostring(tot_c)
+    comp:add_text("(" .. count_c .. ")", "DiffviewFilePanelCounter")
     comp:ln()
 
     render_files(conf, panel, panel.listing_style, panel.components.conflicting.files.comp)
@@ -442,7 +476,10 @@ local function render_panel(panel)
   if #panel.files.working > 0 or not has_other_files or always_show then
     comp = panel.components.working.title.comp
     comp:add_text("Changes ", "DiffviewFilePanelTitle")
-    comp:add_text("(" .. #panel.files.working .. ")", "DiffviewFilePanelCounter")
+    local vis_w, tot_w = panel:count_visible("working")
+    local count_w = (panel.hide_selected and vis_w < tot_w) and (vis_w .. "/" .. tot_w)
+      or tostring(tot_w)
+    comp:add_text("(" .. count_w .. ")", "DiffviewFilePanelCounter")
     comp:ln()
 
     -- Show friendly message when working tree is clean.
@@ -459,7 +496,10 @@ local function render_panel(panel)
   if #panel.files.staged > 0 or always_show then
     comp = panel.components.staged.title.comp
     comp:add_text("Staged changes ", "DiffviewFilePanelTitle")
-    comp:add_text("(" .. #panel.files.staged .. ")", "DiffviewFilePanelCounter")
+    local vis_s, tot_s = panel:count_visible("staged")
+    local count_s = (panel.hide_selected and vis_s < tot_s) and (vis_s .. "/" .. tot_s)
+      or tostring(tot_s)
+    comp:add_text("(" .. count_s .. ")", "DiffviewFilePanelCounter")
     comp:ln()
 
     if #panel.files.staged == 0 then
@@ -468,6 +508,19 @@ local function render_panel(panel)
       render_files(conf, panel, panel.listing_style, panel.components.staged.files.comp)
     end
     panel.components.staged.margin.comp:add_line()
+  end
+
+  -- Footer hint, rendered below the file trees so it grows/shrinks at the
+  -- bottom instead of pushing the trees down when it appears.
+  if panel.hide_selected then
+    local hidden = panel:count_hidden()
+    if hidden > 0 then
+      comp = panel.components.hidden_hint.comp
+      comp:add_text("● ", "DiffviewFilePanelMarked")
+      comp:add_text(tostring(hidden), "DiffviewFilePanelCounter")
+      comp:add_line(" reviewed file(s) hidden", "DiffviewFilePanelPath")
+      comp:add_line()
+    end
   end
 
   if panel.rev_pretty_name or (panel.path_args and #panel.path_args > 0) then

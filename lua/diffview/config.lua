@@ -716,6 +716,7 @@ M.defaults = {
     file_panel = utils.vec_join(common_panel_keymaps, common_nav_keymaps, {
       { { "n", "x" }, "w",    actions.toggle_select_entry,            { desc = "Toggle file selection for multi-file operations" } },
       { "n", "C",              actions.clear_select_entries,           { desc = "Clear all file selections" } },
+      { "n", "H",              actions.toggle_hide_selected,           { desc = "Toggle hiding reviewed (selected) files" } },
       { "n", "-",              actions.toggle_stage_entry,             { desc = "Stage / unstage the selected entry (jj: save & advance)" } },
       { "n", "s",              actions.toggle_stage_entry,             { desc = "Stage / unstage the selected entry (jj: save & advance)" } },
       { "n", "S",              actions.stage_all,                      { desc = "Stage all entries" } },
