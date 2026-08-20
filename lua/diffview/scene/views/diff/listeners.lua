@@ -12,6 +12,29 @@ local vcs_utils = lazy.require("diffview.vcs.utils") ---@module "diffview.vcs.ut
 local api = vim.api
 local await = async.await
 
+---Find the nearest file that is not excluded, searching forward first.
+---@param files FileEntry[]
+---@param anchor FileEntry?
+---@param excluded fun(file: FileEntry): boolean
+---@return FileEntry?
+local function find_visible_neighbor(files, anchor, excluded)
+  local idx = anchor and utils.vec_indexof(files, anchor) or -1
+  if idx == -1 then
+    return
+  end
+
+  for i = idx + 1, #files do
+    if not excluded(files[i]) then
+      return files[i]
+    end
+  end
+  for i = idx - 1, 1, -1 do
+    if not excluded(files[i]) then
+      return files[i]
+    end
+  end
+end
+
 ---@param view DiffView
 return function(view)
   -- Re-arm `auto_close_on_empty` retry after a deferred close. Set when the
@@ -233,6 +256,8 @@ return function(view)
       if mode == "v" or mode == "V" or mode == "\22" then
         local start_line = vim.fn.line("v")
         local end_line = vim.fn.line(".")
+        local visible_files = view.panel.hide_selected and view.panel:ordered_file_list() or nil
+        local cur_file = view.panel.cur_file
         if start_line > end_line then
           start_line, end_line = end_line, start_line
         end
@@ -254,6 +279,14 @@ return function(view)
         end
         view.panel:render()
         view.panel:redraw()
+        if visible_files and cur_file and view.panel:is_selected(cur_file) then
+          local target = find_visible_neighbor(visible_files, cur_file, function(file)
+            return view.panel:is_selected(file)
+          end)
+          if target then
+            view:set_file(target, false, true)
+          end
+        end
         return
       end
 
@@ -307,28 +340,15 @@ return function(view)
           -- absent from `files`. Use the last affected child that is still
           -- visible as the anchor, rather than blindly using the directory's
           -- last leaf.
-          local idx = -1
-          for i, file in ipairs(files) do
+          local anchor ---@type FileEntry?
+          for _, file in ipairs(files) do
             if hidden[file] then
-              idx = i
+              anchor = file
             end
           end
-          if idx ~= -1 then
-            for i = idx + 1, #files do
-              if not hidden[files[i]] then
-                target = files[i]
-                break
-              end
-            end
-            if not target then
-              for i = idx - 1, 1, -1 do
-                if not hidden[files[i]] then
-                  target = files[i]
-                  break
-                end
-              end
-            end
-          end
+          target = find_visible_neighbor(files, anchor, function(file)
+            return hidden[file] == true
+          end)
         else
           -- Unview: the toggled item reappears in the panel; show it in the
           -- diff rather than jumping elsewhere.
@@ -365,11 +385,11 @@ return function(view)
         if will_hide then
           -- Viewing: advance to the next entry (established behaviour).
           view.panel:highlight_next_file()
-          -- Sync cur_file with the cursor's new position so that <tab>/<s-tab>
-          -- navigate from where the cursor landed, not from the previously opened file.
+          -- Open the entry the cursor landed on so the panel, cur_file, and
+          -- displayed diff stay in sync.
           local next_item = view.panel:get_item_at_cursor()
           if next_item and type(next_item.collapsed) ~= "boolean" then
-            view.panel:set_cur_file(next_item --[[@as FileEntry]])
+            view:set_file(next_item --[[@as FileEntry]], false, true)
           end
         else
           -- Unviewing: open the just-unmarked file in the diff and keep the
@@ -874,10 +894,20 @@ return function(view)
       if not view.panel:is_focused() then
         return
       end
+      local files = not view.panel.hide_selected and view.panel:ordered_file_list() or nil
+      local cur_file = view.panel.cur_file
       view.panel:toggle_hide_selected()
       view.panel:update_components()
       view.panel:render()
       view.panel:redraw()
+      if files and cur_file and view.panel:is_selected(cur_file) then
+        local target = find_visible_neighbor(files, cur_file, function(file)
+          return view.panel:is_selected(file)
+        end)
+        if target then
+          view:set_file(target, false, true)
+        end
+      end
       local state = view.panel.hide_selected and "hidden" or "shown"
       utils.info(("Reviewed files: %s"):format(state))
       -- Persist the new hide state immediately (if persistence is enabled).
