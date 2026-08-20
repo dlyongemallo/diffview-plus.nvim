@@ -303,8 +303,16 @@ return function(view)
           for _, f in ipairs(leaves) do
             hidden[f] = true
           end
-          local anchor = leaves[#leaves] -- last affected file in display order
-          local idx = anchor and utils.vec_indexof(files, anchor) or -1
+          -- Some directory children may already be selected and therefore
+          -- absent from `files`. Use the last affected child that is still
+          -- visible as the anchor, rather than blindly using the directory's
+          -- last leaf.
+          local idx = -1
+          for i, file in ipairs(files) do
+            if hidden[file] then
+              idx = i
+            end
+          end
           if idx ~= -1 then
             for i = idx + 1, #files do
               if not hidden[files[i]] then
