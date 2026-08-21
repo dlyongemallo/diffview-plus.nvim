@@ -35,6 +35,15 @@ local function find_visible_neighbor(files, anchor, excluded)
   end
 end
 
+---Move the cursor to the panel's repository path when filtering leaves no
+---selectable file rows.
+---@param panel FilePanel
+local function reconstrain_empty_panel(panel)
+  if #panel:ordered_file_list() == 0 then
+    panel:reconstrain_cursor()
+  end
+end
+
 ---@param view DiffView
 return function(view)
   -- Re-arm `auto_close_on_empty` retry after a deferred close. Set when the
@@ -285,7 +294,11 @@ return function(view)
           end)
           if target then
             view:set_file(target, false, true)
+          else
+            reconstrain_empty_panel(view.panel)
           end
+        else
+          reconstrain_empty_panel(view.panel)
         end
         return
       end
@@ -378,6 +391,8 @@ return function(view)
           -- skipped entry). focus=false keeps the cursor in the panel;
           -- highlight=true moves the panel cursor onto the opened entry.
           view:set_file(target, false, true)
+        else
+          reconstrain_empty_panel(view.panel)
         end
       else
         view.panel:render()
@@ -906,7 +921,11 @@ return function(view)
         end)
         if target then
           view:set_file(target, false, true)
+        else
+          reconstrain_empty_panel(view.panel)
         end
+      else
+        reconstrain_empty_panel(view.panel)
       end
       local state = view.panel.hide_selected and "hidden" or "shown"
       utils.info(("Reviewed files: %s"):format(state))

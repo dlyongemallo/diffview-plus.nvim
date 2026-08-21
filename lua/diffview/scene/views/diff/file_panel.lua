@@ -432,7 +432,17 @@ function FilePanel:reconstrain_cursor()
     return
   end
 
-  local target_row = self.constrain_cursor(self:cursor_winid(), 0)
+  local target_row
+  if #self:ordered_file_list() == 0 then
+    -- All files may still exist while the hide-reviewed filter leaves no
+    -- selectable rows. In that case, use the repository path at the top of
+    -- the panel as the stable resting position for the cursor.
+    local path_comp = self.components and self.components.path and self.components.path.comp
+    target_row = path_comp and math.max(path_comp.lstart + 1, 1) or 1
+  else
+    target_row = self.constrain_cursor(self:cursor_winid(), 0)
+  end
+
   for _, w in ipairs(self:cursor_winids()) do
     pcall(api.nvim_win_set_cursor, w, { target_row, 0 })
   end

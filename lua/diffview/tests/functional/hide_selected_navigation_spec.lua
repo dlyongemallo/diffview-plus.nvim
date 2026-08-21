@@ -89,6 +89,50 @@ describe("reviewed-file navigation", function()
     eq({ next_file, false, true }, opened)
   end)
 
+  it("moves to the repository path after hiding the final visible file", function()
+    local current = { path = "only.lua" }
+    local selected = {}
+    local reconstrained = false
+    local panel = {
+      hide_selected = true,
+      is_open = function()
+        return true
+      end,
+      get_item_at_cursor = function()
+        return current
+      end,
+      is_selected = function(_, file)
+        return selected[file] == true
+      end,
+      ordered_file_list = function()
+        return selected[current] and {} or { current }
+      end,
+      batch_selection = function(_, callback)
+        callback()
+      end,
+      select_file = function(_, file)
+        selected[file] = true
+      end,
+      update_components = function() end,
+      render = function() end,
+      redraw = function() end,
+      reconstrain_cursor = function()
+        reconstrained = true
+      end,
+    }
+    local view = {
+      panel = panel,
+      set_file = function()
+        error("no file should be opened")
+      end,
+    }
+
+    listeners_factory(view).toggle_select_entry()
+
+    eq(true, selected[current])
+    eq(true, reconstrained)
+  end)
+
   it("opens the file selected by the panel after marking an entry", function()
     local current = { path = "b.lua" }
     local next_file = { path = "c.lua" }
