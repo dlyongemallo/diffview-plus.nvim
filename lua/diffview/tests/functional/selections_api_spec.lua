@@ -59,6 +59,32 @@ describe("diffview.api.selections", function()
     return view, panel
   end
 
+  ---Assert that a mutation refreshes a loaded panel without rebuilding its
+  ---component tree.
+  ---@param panel FilePanel
+  ---@param mutate fun()
+  local function assert_panel_refresh(panel, mutate)
+    local renders = 0
+    local redraws = 0
+    panel.buf_loaded = function()
+      return true
+    end
+    panel.update_components = function()
+      error("selection API must not rebuild component trees")
+    end
+    panel.render = function()
+      renders = renders + 1
+    end
+    panel.redraw = function()
+      redraws = redraws + 1
+    end
+
+    mutate()
+
+    eq(1, renders)
+    eq(1, redraws)
+  end
+
   describe("get", function()
     it("returns empty list when no view is given and none is current", function()
       eq({}, selections.get())
@@ -201,6 +227,18 @@ describe("diffview.api.selections", function()
       eq(1, called)
     end)
 
+    it("refreshes a loaded panel after changing selections", function()
+      local a = make_entry("a.lua")
+      local view, panel = make_view({ a })
+      panel.hide_selected = true
+
+      assert_panel_refresh(panel, function()
+        selections.select({ "a.lua" }, { view = view })
+      end)
+
+      eq(true, panel:is_selected(a))
+    end)
+
     it("is safe when no view exists", function()
       assert.has_no.errors(function()
         selections.select({ "a.lua" })
@@ -242,6 +280,19 @@ describe("diffview.api.selections", function()
 
       eq(false, view.panel:is_selected(working))
       eq(true, view.panel:is_selected(staged))
+    end)
+
+    it("refreshes a loaded panel after changing selections", function()
+      local a = make_entry("a.lua")
+      local view, panel = make_view({ a })
+      panel:select_file(a)
+      panel.hide_selected = true
+
+      assert_panel_refresh(panel, function()
+        selections.deselect({ "a.lua" }, { view = view })
+      end)
+
+      eq(false, panel:is_selected(a))
     end)
   end)
 
@@ -315,6 +366,21 @@ describe("diffview.api.selections", function()
       eq(true, view.panel:is_selected(b))
       eq(true, view.panel:is_selected(working))
     end)
+
+    it("refreshes a loaded panel after changing selections", function()
+      local a = make_entry("a.lua")
+      local b = make_entry("b.lua")
+      local view, panel = make_view({ a, b })
+      panel:select_file(a)
+      panel.hide_selected = true
+
+      assert_panel_refresh(panel, function()
+        selections.set({ "b.lua" }, { view = view })
+      end)
+
+      eq(false, panel:is_selected(a))
+      eq(true, panel:is_selected(b))
+    end)
   end)
 
   describe("clear", function()
@@ -329,6 +395,34 @@ describe("diffview.api.selections", function()
 
       eq(false, view.panel:is_selected(a))
       eq(false, view.panel:is_selected(b))
+    end)
+
+    it("refreshes a loaded panel after changing selections", function()
+      local a = make_entry("a.lua")
+      local view, panel = make_view({ a })
+      panel:select_file(a)
+      panel.hide_selected = true
+
+      assert_panel_refresh(panel, function()
+        selections.clear(view)
+      end)
+
+      eq(false, panel:is_selected(a))
+    end)
+
+    it("does not refresh when selections are already empty", function()
+      local view, panel = make_view({ make_entry("a.lua") })
+      panel.buf_loaded = function()
+        return true
+      end
+      panel.render = function()
+        error("no-op selection changes must not render")
+      end
+      panel.redraw = function()
+        error("no-op selection changes must not redraw")
+      end
+
+      selections.clear(view)
     end)
 
     it("is safe when no view exists", function()

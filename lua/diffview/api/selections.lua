@@ -35,6 +35,17 @@ local function get_panel(view)
   return view.panel
 end
 
+---Refresh a loaded file panel after a selection mutation. Selection changes
+---only affect rendered content, so the existing component tree can be reused.
+---@param panel FilePanel
+---@param changed boolean
+local function refresh_panel(panel, changed)
+  if changed and panel:buf_loaded() then
+    panel:render()
+    panel:redraw()
+  end
+end
+
 ---Get all currently selected files.
 ---
 ---Returns a list of tables with `path` and `kind` fields.
@@ -102,15 +113,18 @@ function M.select(paths, opts)
   for _, p in ipairs(paths) do
     path_set[p] = true
   end
+  local changed = false
   panel:batch_selection(function()
     for _, file in panel.files:iter() do
       if path_set[file.path] and (opts.kind == nil or file.kind == opts.kind) then
         if not panel:is_selected(file) then
           panel:select_file(file)
+          changed = true
         end
       end
     end
   end)
+  refresh_panel(panel, changed)
 end
 
 ---Deselect files by path. Paths that do not match any file entry are ignored.
@@ -126,15 +140,18 @@ function M.deselect(paths, opts)
   for _, p in ipairs(paths) do
     path_set[p] = true
   end
+  local changed = false
   panel:batch_selection(function()
     for _, file in panel.files:iter() do
       if path_set[file.path] and (opts.kind == nil or file.kind == opts.kind) then
         if panel:is_selected(file) then
           panel:deselect_file(file)
+          changed = true
         end
       end
     end
   end)
+  refresh_panel(panel, changed)
 end
 
 ---Replace the selection set for the targeted files. Only the given paths
@@ -153,6 +170,7 @@ function M.set(paths, opts)
   for _, p in ipairs(paths) do
     path_set[p] = true
   end
+  local changed = false
   panel:batch_selection(function()
     for _, file in panel.files:iter() do
       -- When a kind filter is active, skip files of other kinds entirely.
@@ -163,12 +181,15 @@ function M.set(paths, opts)
       local have = panel:is_selected(file)
       if want and not have then
         panel:select_file(file)
+        changed = true
       elseif not want and have then
         panel:deselect_file(file)
+        changed = true
       end
       ::continue::
     end
   end)
+  refresh_panel(panel, changed)
 end
 
 ---Clear all selections.
@@ -178,7 +199,9 @@ function M.clear(view)
   if not panel then
     return
   end
+  local changed = panel:has_any_selections()
   panel:clear_selections()
+  refresh_panel(panel, changed)
 end
 
 ---Return true when at least one file is selected.
