@@ -69,7 +69,9 @@ describe("reviewed-file navigation", function()
       select_file = function(_, file)
         selected[file] = true
       end,
-      update_components = function() end,
+      update_components = function()
+        error("selection filtering must not rebuild component trees")
+      end,
       render = function() end,
       redraw = function() end,
     }
@@ -113,7 +115,9 @@ describe("reviewed-file navigation", function()
       select_file = function(_, file)
         selected[file] = true
       end,
-      update_components = function() end,
+      update_components = function()
+        error("selection filtering must not rebuild component trees")
+      end,
       render = function() end,
       redraw = function() end,
       reconstrain_cursor = function()
@@ -195,7 +199,9 @@ describe("reviewed-file navigation", function()
       toggle_hide_selected = function(self)
         self.hide_selected = not self.hide_selected
       end,
-      update_components = function() end,
+      update_components = function()
+        error("selection filtering must not rebuild component trees")
+      end,
       render = function() end,
       redraw = function() end,
     }
@@ -251,7 +257,9 @@ describe("reviewed-file navigation", function()
       batch_selection = function(_, callback)
         callback()
       end,
-      update_components = function() end,
+      update_components = function()
+        error("selection filtering must not rebuild component trees")
+      end,
       render = function() end,
       redraw = function() end,
     }

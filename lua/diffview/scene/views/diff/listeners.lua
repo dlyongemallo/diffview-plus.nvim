@@ -283,9 +283,6 @@ return function(view)
 
         -- Exit visual mode.
         api.nvim_feedkeys(api.nvim_replace_termcodes("<Esc>", true, false, true), "n", false)
-        if view.panel.hide_selected then
-          view.panel:update_components()
-        end
         view.panel:render()
         view.panel:redraw()
         if visible_files and cur_file and view.panel:is_selected(cur_file) then
@@ -380,8 +377,8 @@ return function(view)
       end)
 
       if view.panel.hide_selected then
-        -- Rebuild the component tree so hidden/revealed files are in sync.
-        view.panel:update_components()
+        -- Selection only changes which existing components render a line;
+        -- redraw them without rebuilding and retaining another component tree.
         view.panel:render()
         view.panel:redraw()
         if target then
@@ -912,7 +909,6 @@ return function(view)
       local files = not view.panel.hide_selected and view.panel:ordered_file_list() or nil
       local cur_file = view.panel.cur_file
       view.panel:toggle_hide_selected()
-      view.panel:update_components()
       view.panel:render()
       view.panel:redraw()
       if files and cur_file and view.panel:is_selected(cur_file) then
