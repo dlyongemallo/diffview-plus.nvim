@@ -1176,6 +1176,32 @@ describe("diffview.scene.inline_diff", function()
     end)
   end)
 
+  describe("expression folds", function()
+    it("keeps a pure-deletion anchor and its context unfolded", function()
+      local old = {}
+      for i = 1, 20 do
+        old[i] = "line " .. i
+      end
+
+      local new = vim.deepcopy(old)
+      table.remove(new, 10)
+      local bufnr = fresh_buf(new)
+      inline_diff.render(bufnr, old, new)
+      inline_diff.update_fold_ranges(bufnr, 2)
+
+      api.nvim_buf_call(bufnr, function()
+        assert.equals(1, inline_diff.foldexpr(1))
+        for lnum = 7, 11 do
+          assert.equals(0, inline_diff.foldexpr(lnum))
+        end
+        assert.equals(1, inline_diff.foldexpr(19))
+      end)
+
+      local deleted = virt_line_counts(extmarks(bufnr))
+      assert.are.same({ { row = 8, count = 1, above = false } }, deleted)
+    end)
+  end)
+
   describe("helpers", function()
     local h = inline_diff._test
 

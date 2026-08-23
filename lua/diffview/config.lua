@@ -409,11 +409,13 @@ M.defaults = {
     ---@field style DiffviewInlineStyle
     ---@field deletion_highlight DiffviewInlineDeletionHighlight
     ---@field deletion_treesitter boolean
+    ---@field fold_unchanged boolean
 
     ---@class DiffviewInlineConfig.user
     ---@field style? DiffviewInlineStyle Rendering style for `diff1_inline`. "unified" shows old lines as virt_lines above; "overleaf" renders deletions as inline strikethrough virt_text.
     ---@field deletion_highlight? DiffviewInlineDeletionHighlight Extent of the `DiffDelete` background on deleted virt_lines: `"text"` covers only the deleted chars, `"full_width"` pads to the row, `"hanging"` covers everything except the leading indent.
     ---@field deletion_treesitter? boolean Layer tree-sitter syntax highlights over the deleted virt_lines so they read like the rest of the buffer. Falls back transparently when no parser is attached.
+    ---@field fold_unchanged? boolean Fold unchanged regions in `diff1_inline`, using the context from 'diffopt'.
     -- Options specific to the `diff1_inline` layout.
     inline = {
       -- Rendering style. "unified": proper unified diff -- old lines shown
@@ -432,6 +434,9 @@ M.defaults = {
       -- they read like the rest of the buffer. No-op when no parser is
       -- attached for the buffer's filetype.
       deletion_treesitter = true,
+      -- Fold unchanged regions with 'foldmethod' set to "expr". The number
+      -- of visible context lines follows the `context:N` value in 'diffopt'.
+      fold_unchanged = false,
     },
   },
 
@@ -1648,6 +1653,9 @@ function M.setup(user_config)
   )
   validate.boolean(view.inline, "deletion_treesitter", d.view.inline.deletion_treesitter, {
     path = "view.inline.deletion_treesitter",
+  })
+  validate.boolean(view.inline, "fold_unchanged", d.view.inline.fold_unchanged, {
+    path = "view.inline.fold_unchanged",
   })
 
   -- file_panel

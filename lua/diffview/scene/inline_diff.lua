@@ -1206,6 +1206,11 @@ end
 ---@type table<integer, integer[][]>
 M._hunks_by_buf = {}
 
+-- Per-buffer visible ranges for expression folds in the inline layout. Each
+-- range is a 1-indexed inclusive pair covering a hunk and its context lines.
+---@type table<integer, { [1]: integer, [2]: integer }[]>
+local fold_ranges_by_buf = {}
+
 -- Per-buffer cache of tree-sitter captures for the old side. Survives
 -- `M.clear`/`M.render` so `_repaint`-style flows (where `old_lines` is held
 -- by the caller and reused unchanged) skip the parse on every redraw. The
@@ -1268,6 +1273,7 @@ local function register_cache_cleanup(bufnr)
     once = true,
     callback = function(args)
       M._hunks_by_buf[args.buf] = nil
+      fold_ranges_by_buf[args.buf] = nil
       M._captures_by_buf[args.buf] = nil
       -- The hosting windows may still be valid (e.g. `:bdelete`
       -- switches them to an alternate buffer rather than closing
@@ -1548,6 +1554,7 @@ function M.clear(bufnr)
   -- render pass to register a duplicate autocmd.
   if bufnr then
     M._hunks_by_buf[bufnr] = nil
+    fold_ranges_by_buf[bufnr] = nil
   end
 end
 
@@ -1650,6 +1657,65 @@ end
 ---@return integer[][]?
 function M.get_hunks(bufnr)
   return M._hunks_by_buf[bufnr]
+end
+
+-- Cache the ranges that must remain visible around inline hunks. Pure
+-- deletions use their extmark anchor as the visible line so folding cannot
+-- hide the deleted virtual lines.
+---@param bufnr integer
+---@param context integer
+function M.update_fold_ranges(bufnr, context)
+  local hunks = M._hunks_by_buf[bufnr]
+  if not hunks or #hunks == 0 then
+    fold_ranges_by_buf[bufnr] = nil
+    return
+  end
+
+  local line_count = api.nvim_buf_line_count(bufnr)
+  local ranges = {}
+
+  for _, h in ipairs(hunks) do
+    local first = math.max(1, h[3])
+    local last = h[4] > 0 and first + h[4] - 1 or first
+    first = math.max(1, first - context)
+    last = math.min(line_count, last + context)
+
+    local previous = ranges[#ranges]
+    if previous and first <= previous[2] + 1 then
+      previous[2] = math.max(previous[2], last)
+    else
+      ranges[#ranges + 1] = { first, last }
+    end
+  end
+
+  fold_ranges_by_buf[bufnr] = ranges
+end
+
+-- Return fold level 0 for hunk context and 1 for unchanged lines. The ranges
+-- are sorted, so a binary search keeps foldexpr evaluation cheap for files
+-- with many hunks.
+---@param lnum integer
+---@return integer
+function M.foldexpr(lnum)
+  local ranges = fold_ranges_by_buf[api.nvim_get_current_buf()]
+  if not ranges then
+    return 0
+  end
+
+  local low, high = 1, #ranges
+  while low <= high do
+    local middle = math.floor((low + high) / 2)
+    local range = ranges[middle]
+    if lnum < range[1] then
+      high = middle - 1
+    elseif lnum > range[2] then
+      low = middle + 1
+    else
+      return 0
+    end
+  end
+
+  return 1
 end
 
 -- Find the row of the last hunk strictly before `cursor_row` (0-indexed).

@@ -1812,6 +1812,76 @@ describe("diffview.scene.layouts.diff_1_inline diffopt forwarding", function()
   end)
 end)
 
+describe("diffview.scene.layouts.diff_1_inline folding", function()
+  local Diff1Inline = require("diffview.scene.layouts.diff_1_inline").Diff1Inline
+  local config = require("diffview.config")
+  local inline_diff = require("diffview.scene.inline_diff")
+  local api = vim.api
+
+  it("keeps a pure-deletion anchor outside expression folds", function()
+    local original_config = vim.deepcopy(config.get_config())
+    local original_diffopt = vim.deepcopy(vim.opt.diffopt:get())
+    local old = {}
+    for i = 1, 20 do
+      old[i] = "line " .. i
+    end
+    local new = vim.deepcopy(old)
+    table.remove(new, 10)
+
+    local bufnr = api.nvim_create_buf(false, true)
+    api.nvim_buf_set_lines(bufnr, 0, -1, false, new)
+    local winid = api.nvim_open_win(bufnr, false, {
+      relative = "editor",
+      row = 1,
+      col = 1,
+      width = 40,
+      height = 10,
+    })
+    local inst = setmetatable({
+      b = {
+        id = winid,
+        file = {
+          bufnr = bufnr,
+          is_valid = function()
+            return true
+          end,
+        },
+        is_valid = function()
+          return true
+        end,
+      },
+    }, { __index = Diff1Inline })
+
+    local ok, err = pcall(function()
+      local diffopt = vim.tbl_filter(function(option)
+        return not option:match("^context:")
+      end, original_diffopt)
+      diffopt[#diffopt + 1] = "context:2"
+      vim.opt.diffopt = diffopt
+      config.setup({ view = { foldlevel = 0, inline = { fold_unchanged = true } } })
+
+      inline_diff.render(bufnr, old, new)
+      inst:_install_window_hooks()
+
+      api.nvim_win_call(winid, function()
+        assert.equals("expr", vim.wo.foldmethod)
+        assert.equals(1, vim.fn.foldclosed(1))
+        assert.equals(-1, vim.fn.foldclosed(9))
+      end)
+    end)
+
+    inst:teardown_render()
+    pcall(api.nvim_win_close, winid, true)
+    pcall(api.nvim_buf_delete, bufnr, { force = true })
+    vim.opt.diffopt = original_diffopt
+    config.setup(original_config)
+
+    if not ok then
+      error(err)
+    end
+  end)
+end)
+
 describe("diffview.layout.set_file_for", function()
   it("sets the file on the window and tags it with the symbol", function()
     local stored_file

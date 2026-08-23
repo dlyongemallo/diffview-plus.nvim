@@ -75,6 +75,8 @@ local INSERT_REPAINT_DEBOUNCE_MS = 150
 ---into a single re-emit so the per-resize-step diff cost doesn't pile up.
 local RESIZE_REPAINT_DEBOUNCE_MS = 100
 
+local INLINE_FOLDEXPR = "v:lua.require'diffview.scene.inline_diff'.foldexpr(v:lnum)"
+
 ---@class Diff1Inline : Diff1
 ---@field a_file vcs.File? Old-side file used only to compute the diff (never rendered in a window).
 ---@field _cached_old_lines string[]? Old-side content captured on first render; reused by repaints so each keystroke-level refresh doesn't re-fetch from disk.
@@ -406,6 +408,7 @@ function Diff1Inline:_repaint()
   -- `_repaint`.
   local new_lines = self.b.file.nulled and {} or api.nvim_buf_get_lines(bufnr, 0, -1, false)
   inline_diff.render(bufnr, old_lines, new_lines, render_opts(self.b.id))
+  self:_update_folds()
 end
 
 ---Install buffer-scoped autocmds that repaint on edits. Fires on any
@@ -503,6 +506,26 @@ local function register_repaint_autocmds(self, bufnr)
   end
 end
 
+function Diff1Inline:_update_folds()
+  local conf = config.get_config()
+  if not conf.view.inline.fold_unchanged then
+    return
+  end
+
+  local bufnr = self.b.file.bufnr --[[@as integer ]]
+  local context = tonumber(vim.o.diffopt:match("context:(%d+)")) or 6
+  inline_diff.update_fold_ranges(bufnr, context)
+
+  local winid = self.b.id
+  pcall(api.nvim_win_call, winid, function()
+    vim.wo.foldmethod = "expr"
+    vim.wo.foldexpr = INLINE_FOLDEXPR
+    vim.wo.foldenable = true
+    vim.wo.foldlevel = conf.view.foldlevel
+    vim.cmd("silent! normal! zX")
+  end)
+end
+
 ---Install window-scoped state once the b buffer is visible: turn off
 ---native diff mode (so it doesn't fight the extmark rendering), scope the
 ---namespace to this window (issue #156), and register repaint autocmds.
@@ -526,8 +549,13 @@ function Diff1Inline:_install_window_hooks()
   pcall(api.nvim_set_option_value, "diff", false, { win = winid })
   pcall(api.nvim_set_option_value, "scrollbind", false, { win = winid })
   pcall(api.nvim_set_option_value, "cursorbind", false, { win = winid })
-  pcall(api.nvim_set_option_value, "foldmethod", "manual", { win = winid })
-  pcall(api.nvim_set_option_value, "foldenable", false, { win = winid })
+
+  if config.get_config().view.inline.fold_unchanged then
+    self:_update_folds()
+  else
+    pcall(api.nvim_set_option_value, "foldmethod", "manual", { win = winid })
+    pcall(api.nvim_set_option_value, "foldenable", false, { win = winid })
+  end
 
   inline_diff.attach_to_window(bufnr, winid)
   register_repaint_autocmds(self, bufnr)
