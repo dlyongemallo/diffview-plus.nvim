@@ -107,4 +107,43 @@ function M.close_view(view)
   require("diffview.lib").dispose_view(view)
 end
 
+---Stage everything in `repo` and commit it.
+---@param repo string
+---@param msg string
+function M.commit(repo, msg)
+  M.run({ "git", "add", "-A" }, repo)
+  M.run({ "git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", msg }, repo)
+end
+
+---`n` numbered lines, `prefix 1` through `prefix n`. Distinct prefixes make a
+---fixture's blocks tell each other apart in a failure message.
+---@param prefix string
+---@param n integer
+---@return string[]
+function M.body(prefix, n)
+  local out = {}
+  for i = 1, n do
+    out[i] = ("%s %d"):format(prefix, i)
+  end
+  return out
+end
+
+---Write `lines` to `name` under `repo`, newline-terminated.
+---@param repo string
+---@param name string
+---@param lines string[]
+function M.write(repo, name, lines)
+  local f = assert(io.open(repo .. "/" .. name, "w"))
+  f:write(table.concat(lines, "\n") .. "\n")
+  f:close()
+end
+
+---The text under the cursor in `win`.
+---@param win integer
+---@return string?
+function M.line_at(win)
+  local row = vim.api.nvim_win_get_cursor(win)[1]
+  return vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(win), row - 1, row, false)[1]
+end
+
 return M

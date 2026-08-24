@@ -369,6 +369,7 @@ describe("session save/restore", function()
       adapter = opts.adapter or { ctx = { toplevel = "/fake/repo" } },
       panel = opts.panel,
       cur_layout = opts.cur_layout,
+      cursor_map = opts.cursor_map,
     }
   end
 
@@ -450,6 +451,35 @@ describe("session save/restore", function()
       assert.equals("src/init.lua", payload.views[1].selected_file)
       assert.equals("file_history", payload.views[2].kind)
       assert.are.same({ "--follow", "src/foo.lua" }, payload.views[2].args)
+    end)
+
+    it("writes cursor state in the bare v1 `winsaveview` shape", function()
+      lib.views = {
+        fake_view({
+          _session_record = { kind = "file_history", args = { "src/main.lua" } },
+          tabpage = api.nvim_get_current_tabpage(),
+          cursor_map = {
+            ["src/main.lua"] = {
+              winview = { lnum = 42, col = 3, topline = 10 },
+              bufnr = 7,
+              bufname = "/fake/repo/src/main.lua",
+            },
+          },
+        }),
+      }
+
+      session.save()
+
+      local f = assert(io.open(tmp_session .. ".diffview.json", "r"))
+      local payload = vim.json.decode(f:read("*a"))
+      f:close()
+
+      -- A checkout without the carry hands this dict straight to
+      -- `winrestview`, so the entry stays bare and no buffer handle
+      -- reaches disk.
+      assert.are.same({
+        ["src/main.lua"] = { lnum = 42, col = 3, topline = 10 },
+      }, payload.views[1].cursor_map)
     end)
 
     it("sorts entries by tabpage order", function()
@@ -676,9 +706,46 @@ describe("session save/restore", function()
 
       assert.is_not_nil(captured)
       assert.equals("src/main.lua", captured.options.selected_file)
+      -- A pre-carry sidecar holds bare `winsaveview` dicts. Reading one
+      -- lifts them into the carry shape.
       assert.are.same({
-        ["src/main.lua"] = { lnum = 42, col = 3, topline = 10 },
-        ["src/other.lua"] = { lnum = 100, col = 0, topline = 80 },
+        ["src/main.lua"] = { winview = { lnum = 42, col = 3, topline = 10 } },
+        ["src/other.lua"] = { winview = { lnum = 100, col = 0, topline = 80 } },
+      }, captured.cursor_map)
+    end)
+
+    it("drops buffer handles from a restored `cursor_map`", function()
+      local captured
+      lib.file_history = function(_, _)
+        local v = { tabpage = nil, open = function() end }
+        captured = v
+        return v
+      end
+      local f = assert(io.open(tmp_session .. ".diffview.json", "w"))
+      f:write(vim.json.encode({
+        version = 1,
+        views = {
+          {
+            kind = "file_history",
+            args = { "src/main.lua" },
+            tabpage_order = 1,
+            cursor_map = {
+              ["src/main.lua"] = {
+                winview = { lnum = 42, col = 3, topline = 10 },
+                bufnr = 7,
+                focus = { sym = "a", bufnr = 8, vs = { lnum = 12 } },
+              },
+            },
+          },
+        },
+      }))
+      f:close()
+
+      session.restore()
+
+      assert.is_not_nil(captured)
+      assert.are.same({
+        ["src/main.lua"] = { winview = { lnum = 42, col = 3, topline = 10 } },
       }, captured.cursor_map)
     end)
 
