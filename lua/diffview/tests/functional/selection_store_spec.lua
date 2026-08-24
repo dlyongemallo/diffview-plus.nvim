@@ -392,16 +392,16 @@ describe("diffview.selection_store", function()
       eq({ a, b }, panel:ordered_file_list())
     end)
 
-    it("count_hidden counts selected files regardless of kind", function()
+    it("count_selected counts selected files regardless of kind", function()
       local a = { path = "a.lua", kind = "working" }
       local b = { path = "b.lua", kind = "staged" }
       local c = { path = "c.lua", kind = "working" }
       local panel = make_panel({ a, b, c })
 
-      eq(0, panel:count_hidden())
+      eq(0, panel:count_selected())
       panel:select_file(a)
       panel:select_file(b)
-      eq(2, panel:count_hidden())
+      eq(2, panel:count_selected())
     end)
 
     it("count_visible returns total/total when filter is off", function()
@@ -445,7 +445,7 @@ describe("diffview.selection_store", function()
 
     it("count_visible returns 0,0 for an unknown kind", function()
       local panel = make_panel({})
-      local visible, total = panel:count_visible("conflicting")
+      local visible, total = panel:count_visible("bogus" --[[@as any]])
       eq(0, visible)
       eq(0, total)
     end)
