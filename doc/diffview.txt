@@ -822,13 +822,16 @@ signs                                           *diffview-config-signs*
 persist_selections                              *diffview-config-persist_selections*
         Type: `table`, Default: `{ enabled = false, path = nil }`
 
-        Persist file selections to disk so they survive Neovim restarts.
-        Selections are scoped per repository and revision, debounced,
-        and auto-pruned when the file list changes.
+        Persist file selections and the hide-reviewed state to disk so they
+        survive Neovim restarts. Both are scoped per repository and revision.
+        Selection writes are debounced, and stale selections are auto-pruned
+        when the file list changes. Toggling the hide-reviewed state is saved
+        immediately.
 
         Fields: ~
             {enabled} (boolean)
-                Enable or disable selection persistence.
+                Enable or disable selection and hide-reviewed state
+                persistence.
 
             {path} (string|nil)
                 Path to the JSON storage file. When `nil`, defaults to
@@ -2073,6 +2076,12 @@ toggle_fold                                     *diffview-actions-toggle_fold*
 
         Collapse / expand the fold of the subject.
 
+toggle_hide_selected                            *diffview-actions-toggle_hide_selected*
+        Contexts: `file_panel`
+
+        Toggle whether reviewed (selected) files are hidden in the file
+        panel. The selection state is preserved when files are hidden.
+
 toggle_select_entry                             *diffview-actions-toggle_select_entry*
         Contexts: `file_panel`
 
@@ -2441,6 +2450,9 @@ w                       Toggle file selection for multi-file operations.
 
                                                 *diffview-maps-clear_select_entries*
 C                       Clear all file selections.
+
+                                                *diffview-maps-toggle_hide_selected*
+H                       Toggle hiding reviewed (selected) files.
 
                                                 *diffview-maps-toggle_stage_entry*
 -                       Stage/unstage the selected file entry. If files are

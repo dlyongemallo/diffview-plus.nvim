@@ -1077,6 +1077,43 @@ describe("diffview.ui.panel", function()
       end)
     end)
 
+    it("reconstrain_cursor uses the repository path when all files are hidden", function()
+      local panel = make_panel({ make_entry("a.lua") })
+      local original_set_cursor = vim.api.nvim_win_set_cursor
+      local cursor_writes = {}
+
+      local ok, err = pcall(function()
+        panel.is_open = function()
+          return true
+        end
+        panel.buf_loaded = function()
+          return true
+        end
+        panel.ordered_file_list = function()
+          return {}
+        end
+        panel.cursor_winids = function()
+          return { 11, 12 }
+        end
+        panel.components = { path = { comp = { lstart = 3 } } }
+        panel.constrain_cursor = function()
+          error("file-row constraint should not be used")
+        end
+        vim.api.nvim_win_set_cursor = function(winid, cursor)
+          cursor_writes[#cursor_writes + 1] = { winid, cursor }
+        end
+
+        panel:reconstrain_cursor()
+
+        eq({ { 11, { 4, 0 } }, { 12, { 4, 0 } } }, cursor_writes)
+      end)
+
+      vim.api.nvim_win_set_cursor = original_set_cursor
+      if not ok then
+        error(err)
+      end
+    end)
+
     it("ordered_file_list works without components", function()
       local f1 = make_entry("a.lua")
       local f2 = make_entry("b.lua")

@@ -41,7 +41,7 @@ DEFAULT CONFIG                                  *diffview.defaults*
     clean_up_buffers = false, -- Delete file buffers created by diffview on close.
     restore_session = true,   -- Restore open Diffview/FileHistory views from a sourced Vim session.
     persist_selections = {
-      enabled = false,        -- Persist file selections to disk across Neovim restarts.
+      enabled = false,        -- Persist file selections and hide-reviewed state across Neovim restarts.
       path = nil,             -- Storage path. Nil uses stdpath("data") .. "/diffview_selections.json".
     },
     icons = {                 -- Only applies when use_icons is true.
@@ -266,6 +266,7 @@ DEFAULT CONFIG                                  *diffview.defaults*
         { "n", "<2-LeftMouse>",  actions.select_entry,                   { desc = "Open the diff for the selected entry" } },
         { { "n", "x" }, "w",    actions.toggle_select_entry,            { desc = "Toggle file selection for multi-file operations" } },
         { "n", "C",              actions.clear_select_entries,           { desc = "Clear all file selections" } },
+        { "n", "H",              actions.toggle_hide_selected,           { desc = "Toggle hiding reviewed (selected) files" } },
         { "n", "-",              actions.toggle_stage_entry,             { desc = "Stage / unstage the selected entry (jj: save & advance)" } },
         { "n", "s",              actions.toggle_stage_entry,             { desc = "Stage / unstage the selected entry (jj: save & advance)" } },
         { "n", "S",              actions.stage_all,                      { desc = "Stage all entries" } },

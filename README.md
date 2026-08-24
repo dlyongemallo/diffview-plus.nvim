@@ -90,7 +90,10 @@ and committing workflows.
 
 - **Multi-file Selection** — Select multiple files in the file panel
   (`w` to toggle, `C` to clear) for batch stage / unstage / restore.
-  Selections persist across Neovim restarts.
+  Press `H` to hide or reveal reviewed (selected) files and focus on the
+  remaining changes. These mappings can be overridden through
+  `keymaps.file_panel`. When `persist_selections` is enabled, selections and
+  the hide-reviewed state survive Neovim restarts.
 
 - **Pin Local in File History** — Run `:DiffviewFileHistory --pin-local`
   to keep the working tree on one side while cycling commits on the

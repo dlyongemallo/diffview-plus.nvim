@@ -12,6 +12,38 @@ local vcs_utils = lazy.require("diffview.vcs.utils") ---@module "diffview.vcs.ut
 local api = vim.api
 local await = async.await
 
+---Find the nearest file that is not excluded, searching forward first.
+---@param files FileEntry[]
+---@param anchor FileEntry?
+---@param excluded fun(file: FileEntry): boolean
+---@return FileEntry?
+local function find_visible_neighbor(files, anchor, excluded)
+  local idx = anchor and utils.vec_indexof(files, anchor) or -1
+  if idx == -1 then
+    return
+  end
+
+  for i = idx + 1, #files do
+    if not excluded(files[i]) then
+      return files[i]
+    end
+  end
+  for i = idx - 1, 1, -1 do
+    if not excluded(files[i]) then
+      return files[i]
+    end
+  end
+end
+
+---Move the cursor to the panel's repository path when filtering leaves no
+---selectable file rows.
+---@param panel FilePanel
+local function reconstrain_empty_panel(panel)
+  if #panel:ordered_file_list() == 0 then
+    panel:reconstrain_cursor()
+  end
+end
+
 ---@param view DiffView
 return function(view)
   -- Re-arm `auto_close_on_empty` retry after a deferred close. Set when the
@@ -233,6 +265,8 @@ return function(view)
       if mode == "v" or mode == "V" or mode == "\22" then
         local start_line = vim.fn.line("v")
         local end_line = vim.fn.line(".")
+        local visible_files = view.panel.hide_selected and view.panel:ordered_file_list() or nil
+        local cur_file = view.panel.cur_file
         if start_line > end_line then
           start_line, end_line = end_line, start_line
         end
@@ -251,6 +285,18 @@ return function(view)
         api.nvim_feedkeys(api.nvim_replace_termcodes("<Esc>", true, false, true), "n", false)
         view.panel:render()
         view.panel:redraw()
+        if visible_files and cur_file and view.panel:is_selected(cur_file) then
+          local target = find_visible_neighbor(visible_files, cur_file, function(file)
+            return view.panel:is_selected(file)
+          end)
+          if target then
+            view:set_file(target, false, true)
+          else
+            reconstrain_empty_panel(view.panel)
+          end
+        else
+          reconstrain_empty_panel(view.panel)
+        end
         return
       end
 
@@ -260,42 +306,110 @@ return function(view)
         return
       end
 
+      -- Resolve the affected leaves and whether this toggle will SELECT (hide)
+      -- or DESELECT (reveal) them. A directory selects-all unless every child
+      -- is already selected, in which case it deselects-all.
+      local leaves = {} ---@type FileEntry[]
       if type(item.collapsed) == "boolean" then
-        -- Directory: select all if any child is unselected, else deselect all.
         ---@cast item DirData
         local node = item._node
         if not node then
           return
         end
-
-        local leaves = node:leaves()
-        local all_selected = true
-        for _, leaf in ipairs(leaves) do
-          if leaf.data and not view.panel:is_selected(leaf.data) then
-            all_selected = false
-            break
+        for _, leaf in ipairs(node:leaves()) do
+          if leaf.data then
+            leaves[#leaves + 1] = leaf.data
           end
         end
-
-        view.panel:batch_selection(function()
-          for _, leaf in ipairs(leaves) do
-            if leaf.data then
-              if all_selected then
-                view.panel:deselect_file(leaf.data)
-              else
-                view.panel:select_file(leaf.data)
-              end
-            end
-          end
-        end)
       else
-        ---@cast item FileEntry
-        view.panel:toggle_selection(item)
+        leaves[1] = item --[[@as FileEntry]]
       end
 
-      view.panel:render()
-      view.panel:redraw()
-      view.panel:highlight_next_file()
+      local will_hide = false
+      for _, f in ipairs(leaves) do
+        if not view.panel:is_selected(f) then
+          will_hide = true -- at least one unselected -> this toggle selects
+          break
+        end
+      end
+
+      -- In hide mode, pre-compute which file the diff should show afterward,
+      -- while the affected files are still present in ordered_file_list().
+      local target ---@type FileEntry?
+      if view.panel.hide_selected then
+        if will_hide then
+          -- The affected files vanish on render. Land on the nearest file that
+          -- stays visible (searching forward, then backward), skipping the
+          -- hidden set so we never land on a sibling that is also disappearing.
+          local files = view.panel:ordered_file_list()
+          local hidden = {} ---@type table<table, true>
+          for _, f in ipairs(leaves) do
+            hidden[f] = true
+          end
+          -- Some directory children may already be selected and therefore
+          -- absent from `files`. Use the last affected child that is still
+          -- visible as the anchor, rather than blindly using the directory's
+          -- last leaf.
+          local anchor ---@type FileEntry?
+          for _, file in ipairs(files) do
+            if hidden[file] then
+              anchor = file
+            end
+          end
+          target = find_visible_neighbor(files, anchor, function(file)
+            return hidden[file] == true
+          end)
+        else
+          -- Unview: the toggled item reappears in the panel; show it in the
+          -- diff rather than jumping elsewhere.
+          target = leaves[1]
+        end
+      end
+
+      view.panel:batch_selection(function()
+        for _, f in ipairs(leaves) do
+          if will_hide then
+            view.panel:select_file(f)
+          else
+            view.panel:deselect_file(f)
+          end
+        end
+      end)
+
+      if view.panel.hide_selected then
+        -- Selection only changes which existing components render a line;
+        -- redraw them without rebuilding and retaining another component tree.
+        view.panel:render()
+        view.panel:redraw()
+        if target then
+          -- Open the target in the diff so the view never lingers on a file
+          -- that just disappeared. set_file() also syncs cur_file + highlight,
+          -- so <tab>/<s-tab> navigate from what's actually displayed (no
+          -- skipped entry). focus=false keeps the cursor in the panel;
+          -- highlight=true moves the panel cursor onto the opened entry.
+          view:set_file(target, false, true)
+        else
+          reconstrain_empty_panel(view.panel)
+        end
+      else
+        view.panel:render()
+        view.panel:redraw()
+        if will_hide then
+          -- Viewing: advance to the next entry (established behaviour).
+          view.panel:highlight_next_file()
+          -- Open the entry the cursor landed on so the panel, cur_file, and
+          -- displayed diff stay in sync.
+          local next_item = view.panel:get_item_at_cursor()
+          if next_item and type(next_item.collapsed) ~= "boolean" then
+            view:set_file(next_item --[[@as FileEntry]], false, true)
+          end
+        else
+          -- Unviewing: open the just-unmarked file in the diff and keep the
+          -- cursor on it (set_file syncs cur_file + highlight, focus stays in
+          -- the panel).
+          view:set_file(leaves[1], false, true)
+        end
+      end
     end,
     clear_select_entries = function()
       if not view.panel:is_open() then
@@ -787,6 +901,32 @@ return function(view)
       if dir then
         view.panel:toggle_item_fold(dir)
       end
+    end,
+    toggle_hide_selected = function()
+      if not view.panel:is_focused() then
+        return
+      end
+      local files = not view.panel.hide_selected and view.panel:ordered_file_list() or nil
+      local cur_file = view.panel.cur_file
+      view.panel:toggle_hide_selected()
+      view.panel:render()
+      view.panel:redraw()
+      if files and cur_file and view.panel:is_selected(cur_file) then
+        local target = find_visible_neighbor(files, cur_file, function(file)
+          return view.panel:is_selected(file)
+        end)
+        if target then
+          view:set_file(target, false, true)
+        else
+          reconstrain_empty_panel(view.panel)
+        end
+      else
+        reconstrain_empty_panel(view.panel)
+      end
+      local state = view.panel.hide_selected and "hidden" or "shown"
+      utils.info(("Reviewed files: %s"):format(state))
+      -- Persist the new hide state immediately (if persistence is enabled).
+      view:_save_selections_now()
     end,
   }
 end
