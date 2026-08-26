@@ -196,9 +196,9 @@ function FilePanel:toggle_hide_selected()
   self.hide_selected = not self.hide_selected
 end
 
----Count files currently hidden by the hide-selected filter.
+---Count selected files across every kind.
 ---@return integer
-function FilePanel:count_hidden()
+function FilePanel:count_selected()
   local count = 0
   for _, file in self.files:iter() do
     if self:is_selected(file) then

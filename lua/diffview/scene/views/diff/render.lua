@@ -71,6 +71,19 @@ local function render_folder_count(comp, node, tree_options)
   end
 end
 
+---Format a section header counter as `(N)` or, when the hide-reviewed filter
+---is on and hidden files leave a gap, `(visible/total)`.
+---@param panel FilePanel
+---@param kind "conflicting"|"working"|"staged"
+---@return string
+local function section_counter(panel, kind)
+  local vis, tot = panel:count_visible(kind)
+  if panel.hide_selected and vis < tot then
+    return "(" .. vis .. "/" .. tot .. ")"
+  end
+  return "(" .. tot .. ")"
+end
+
 ---Return true when every file leaf under a directory component is hidden.
 ---@param panel FilePanel
 ---@param comp RenderComponent
@@ -458,10 +471,7 @@ local function render_panel(panel)
   if #panel.files.conflicting > 0 then
     comp = panel.components.conflicting.title.comp
     comp:add_text("Conflicts ", "DiffviewFilePanelTitle")
-    local vis_c, tot_c = panel:count_visible("conflicting")
-    local count_c = (panel.hide_selected and vis_c < tot_c) and (vis_c .. "/" .. tot_c)
-      or tostring(tot_c)
-    comp:add_text("(" .. count_c .. ")", "DiffviewFilePanelCounter")
+    comp:add_text(section_counter(panel, "conflicting"), "DiffviewFilePanelCounter")
     comp:ln()
 
     render_files(conf, panel, panel.listing_style, panel.components.conflicting.files.comp)
@@ -476,10 +486,7 @@ local function render_panel(panel)
   if #panel.files.working > 0 or not has_other_files or always_show then
     comp = panel.components.working.title.comp
     comp:add_text("Changes ", "DiffviewFilePanelTitle")
-    local vis_w, tot_w = panel:count_visible("working")
-    local count_w = (panel.hide_selected and vis_w < tot_w) and (vis_w .. "/" .. tot_w)
-      or tostring(tot_w)
-    comp:add_text("(" .. count_w .. ")", "DiffviewFilePanelCounter")
+    comp:add_text(section_counter(panel, "working"), "DiffviewFilePanelCounter")
     comp:ln()
 
     -- Show friendly message when working tree is clean.
@@ -496,10 +503,7 @@ local function render_panel(panel)
   if #panel.files.staged > 0 or always_show then
     comp = panel.components.staged.title.comp
     comp:add_text("Staged changes ", "DiffviewFilePanelTitle")
-    local vis_s, tot_s = panel:count_visible("staged")
-    local count_s = (panel.hide_selected and vis_s < tot_s) and (vis_s .. "/" .. tot_s)
-      or tostring(tot_s)
-    comp:add_text("(" .. count_s .. ")", "DiffviewFilePanelCounter")
+    comp:add_text(section_counter(panel, "staged"), "DiffviewFilePanelCounter")
     comp:ln()
 
     if #panel.files.staged == 0 then
@@ -513,7 +517,7 @@ local function render_panel(panel)
   -- Footer hint, rendered below the file trees so it grows/shrinks at the
   -- bottom instead of pushing the trees down when it appears.
   if panel.hide_selected then
-    local hidden = panel:count_hidden()
+    local hidden = panel:count_selected()
     if hidden > 0 then
       comp = panel.components.hidden_hint.comp
       comp:add_text("● ", "DiffviewFilePanelMarked")
