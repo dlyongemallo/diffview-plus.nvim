@@ -80,6 +80,7 @@ local INLINE_FOLDEXPR = "v:lua.require'diffview.scene.inline_diff'.foldexpr(v:ln
 ---@class Diff1Inline : Diff1
 ---@field a_file vcs.File? Old-side file used only to compute the diff (never rendered in a window).
 ---@field _cached_old_lines string[]? Old-side content captured on first render; reused by repaints so each keystroke-level refresh doesn't re-fetch from disk.
+---@field _fold_bufnr integer? Buffer whose expression folds have been initialized in the inline window.
 ---@field _render_generation integer Bumped on every state transition that invalidates in-flight render work: file swap (`use_entry`), render teardown (`teardown_render`, which covers `destroy` and `FileEntry:convert_layout`), and recreate (`create`). Async passes capture the value at entry and bail when it changes mid-flight, so a stale `_load_old_lines` callback can't overwrite `_cached_old_lines` for a file the user has navigated past or render onto a buffer the view no longer owns. Also covers cached-instance reuse: `StandardView` keeps one layout per class and re-runs `create` on the same instance after a prior `destroy`, so a sticky destroyed flag would block reuse; the monotonic counter does not.
 ---@field _repaint_bufnr integer? Buffer id the repaint autocmds are attached to (nil when no autocmds are installed).
 ---@field _repaint_debounced CancellableFn? Trailing-edge debounced `_repaint` used for the insert-mode `TextChangedI` hook.
@@ -518,11 +519,20 @@ function Diff1Inline:_update_folds()
 
   local winid = self.b.id
   pcall(api.nvim_win_call, winid, function()
-    vim.wo.foldmethod = "expr"
-    vim.wo.foldexpr = INLINE_FOLDEXPR
-    vim.wo.foldenable = true
-    vim.wo.foldlevel = conf.view.foldlevel
-    vim.cmd("silent! normal! zX")
+    local configured = self._fold_bufnr == bufnr
+      and vim.wo.foldmethod == "expr"
+      and vim.wo.foldexpr == INLINE_FOLDEXPR
+    if not configured then
+      vim.wo.foldmethod = "expr"
+      vim.wo.foldexpr = INLINE_FOLDEXPR
+      vim.wo.foldenable = true
+      vim.wo.foldlevel = conf.view.foldlevel
+      self._fold_bufnr = bufnr
+    else
+      -- Reassigning 'foldexpr' invalidates expression folds without resetting
+      -- folds the user manually opened or closed, unlike zX/'foldlevel'.
+      vim.wo.foldexpr = INLINE_FOLDEXPR
+    end
   end)
 end
 
@@ -759,6 +769,7 @@ function Diff1Inline:teardown_render()
   end
   self._repaint_bufnr = nil
   self._cached_old_lines = nil
+  self._fold_bufnr = nil
   if self.b and self.b.file and self.b.file.bufnr then
     inline_diff.detach(self.b.file.bufnr)
   end

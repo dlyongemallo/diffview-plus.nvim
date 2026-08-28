@@ -1818,7 +1818,7 @@ describe("diffview.scene.layouts.diff_1_inline folding", function()
   local inline_diff = require("diffview.scene.inline_diff")
   local api = vim.api
 
-  it("keeps a pure-deletion anchor outside expression folds", function()
+  it("keeps deletion anchors visible and preserves manual opens on repaint", function()
     local original_config = vim.deepcopy(config.get_config())
     local original_diffopt = vim.deepcopy(vim.opt.diffopt:get())
     local old = {}
@@ -1867,6 +1867,14 @@ describe("diffview.scene.layouts.diff_1_inline folding", function()
         assert.equals("expr", vim.wo.foldmethod)
         assert.equals(1, vim.fn.foldclosed(1))
         assert.equals(-1, vim.fn.foldclosed(9))
+
+        api.nvim_win_set_cursor(winid, { 1, 0 })
+        vim.cmd("normal! zo")
+        assert.equals(-1, vim.fn.foldclosed(1))
+
+        inst._cached_old_lines = old
+        inst:_repaint()
+        assert.equals(-1, vim.fn.foldclosed(1))
       end)
     end)
 
