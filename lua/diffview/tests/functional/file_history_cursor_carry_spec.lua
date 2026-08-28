@@ -113,6 +113,31 @@ describe("file history cursor carry", function()
     eq(20, api.nvim_buf_line_count(api.nvim_win_get_buf(main_win())))
   end
 
+  it("opens the folds hiding the carried cursor", function()
+    local main = open_history()
+    api.nvim_set_current_win(main)
+    api.nvim_win_set_cursor(main, { 50, 0 })
+    eq("body 5", line_at(main))
+
+    step("select_next_commit", 2)
+
+    -- `foldlevel` defaults to 0, so the arriving diff closes every unchanged
+    -- region -- which is exactly where a carried line lands, since it is
+    -- context in the commit being opened rather than part of its diff. Both
+    -- panes are checked: `cursorbind` moves the other window's cursor but
+    -- opens nothing, and a pane left folded misaligns against its partner.
+    for i, win in ipairs(view.cur_layout.windows) do
+      if win.id and api.nvim_win_is_valid(win.id) then
+        local closed = api.nvim_win_call(win.id, function()
+          return vim.fn.foldclosed(api.nvim_win_get_cursor(win.id)[1])
+        end)
+        eq(-1, closed, ("window %d left its cursor inside a closed fold"):format(i))
+      end
+    end
+
+    eq("body 5", line_at(main_win()))
+  end)
+
   it("keeps the cursor on the same code across select_next_commit", function()
     assert_carries_across("select_next_commit")
   end)

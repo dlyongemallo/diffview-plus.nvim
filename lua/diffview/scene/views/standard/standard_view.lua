@@ -151,6 +151,27 @@ local function capture_winview(winid)
   return { winview = winview, bufnr = bufnr, bufname = api.nvim_buf_get_name(bufnr) }
 end
 
+---Open the folds hiding the cursor line in `winid`.
+---
+---With `'foldlevel'` at its default of 0 a diff buffer arrives with every
+---unchanged region closed, which is exactly where a carried cursor tends to
+---land: the line it followed is context in the commit being opened, not part
+---of its diff. A cursor inside a closed fold tells the reader nothing about
+---where it went.
+---
+---Only the main window is revealed, for the same reason only it is placed.
+---Doing it in the layout's other windows instead drags the main cursor off its
+---line, because `'cursorbind'` syncs on the move `zv` makes there. The other
+---panes come out revealed anyway, which `file_history_cursor_carry_spec`
+---asserts. `pcall` because a pane may hold a null buffer, or have folding
+---switched off entirely.
+---@param winid integer
+local function reveal_cursor_line(winid)
+  pcall(api.nvim_win_call, winid, function()
+    vim.cmd("normal! zv")
+  end)
+end
+
 ---Translate `state` into the window's current buffer, then apply it.
 ---@param winid integer
 ---@param state StandardView.CarryState
@@ -307,6 +328,7 @@ function StandardView:restore_main_view(path)
   local ok = apply_winview(win.id, target)
 
   if ok then
+    reveal_cursor_line(win.id)
     self.cursor_map[path] = nil
   end
   return ok
