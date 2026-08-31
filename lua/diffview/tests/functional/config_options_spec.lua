@@ -264,6 +264,42 @@ describe("view.inline.deletion_treesitter", function()
   end)
 end)
 
+describe("view.inline.fold_unchanged", function()
+  local original
+  local utils = require("diffview.utils")
+  local orig_err
+  local orig_warn
+
+  before_each(function()
+    original = vim.deepcopy(config.get_config())
+    orig_err = utils.err
+    orig_warn = utils.warn
+    utils.err = function() end
+    utils.warn = function() end
+  end)
+
+  after_each(function()
+    config.setup(original)
+    utils.err = orig_err
+    utils.warn = orig_warn
+  end)
+
+  it("defaults to false", function()
+    local conf = setup_with({})
+    assert.equals(false, conf.view.inline.fold_unchanged)
+  end)
+
+  it("accepts true", function()
+    local conf = setup_with({ view = { inline = { fold_unchanged = true } } })
+    assert.equals(true, conf.view.inline.fold_unchanged)
+  end)
+
+  it("rejects non-boolean values and falls back to the default", function()
+    local conf = setup_with({ view = { inline = { fold_unchanged = "yep" } } })
+    assert.equals(false, conf.view.inline.fold_unchanged)
+  end)
+end)
+
 describe("file_history_panel.log_options.jj", function()
   local original
 
