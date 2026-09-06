@@ -415,8 +415,8 @@ local function warn_failed(err)
 end
 
 ---Turn a raw sidecar `cursor_map` into `StandardView.CarryState`s, or nil if
----nothing usable remains. Buffer handles do not survive. This nvim run may
----have handed the same number to an unrelated file.
+---nothing usable remains. Accepts entries as either a bare `winsaveview` dict
+---or a `{ winview = ... }` wrapper.
 ---@param raw any
 ---@return table<string, StandardView.CarryState>?
 local function sanitize_cursor_map(raw)

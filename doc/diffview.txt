@@ -1182,7 +1182,9 @@ view.inline                                     *diffview-config-view.inline*
                 context lines follows `context:N` in |'diffopt'|, defaulting
                 to 6 when omitted. Pure-deletion anchors remain unfolded so
                 their deleted virtual lines stay visible. The initial fold
-                level is controlled by |diffview-config-view.foldlevel|.
+                level is controlled by |diffview-config-view.foldlevel|;
+                setting it high enough to keep every fold open (e.g., `99`)
+                makes this option a no-op.
 
 view.file_history.pin_local                     *diffview-config-view.file_history.pin_local*
         Type: `boolean`, Default: `false`

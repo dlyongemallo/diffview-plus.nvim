@@ -1200,6 +1200,55 @@ describe("diffview.scene.inline_diff", function()
       local deleted = virt_line_counts(extmarks(bufnr))
       assert.are.same({ { row = 8, count = 1, above = false } }, deleted)
     end)
+
+    it("keeps line 1 unfolded when the deletion is at the start of file", function()
+      local old = {}
+      for i = 1, 20 do
+        old[i] = "line " .. i
+      end
+
+      local new = vim.deepcopy(old)
+      table.remove(new, 1)
+      local bufnr = fresh_buf(new)
+      inline_diff.render(bufnr, old, new)
+      inline_diff.update_fold_ranges(bufnr, 2)
+
+      api.nvim_buf_call(bufnr, function()
+        for lnum = 1, 3 do
+          assert.equals(0, inline_diff.foldexpr(lnum))
+        end
+        assert.equals(1, inline_diff.foldexpr(4))
+      end)
+
+      local deleted = virt_line_counts(extmarks(bufnr))
+      assert.are.same({ { row = 0, count = 1, above = true } }, deleted)
+    end)
+
+    it("merges overlapping context ranges of adjacent hunks", function()
+      local old = {}
+      for i = 1, 15 do
+        old[i] = "line " .. i
+      end
+
+      local new = vim.deepcopy(old)
+      new[5] = "changed 5"
+      new[10] = "changed 10"
+      local bufnr = fresh_buf(new)
+      inline_diff.render(bufnr, old, new)
+      inline_diff.update_fold_ranges(bufnr, 2)
+
+      api.nvim_buf_call(bufnr, function()
+        for lnum = 1, 2 do
+          assert.equals(1, inline_diff.foldexpr(lnum))
+        end
+        for lnum = 3, 12 do
+          assert.equals(0, inline_diff.foldexpr(lnum))
+        end
+        for lnum = 13, 15 do
+          assert.equals(1, inline_diff.foldexpr(lnum))
+        end
+      end)
+    end)
   end)
 
   describe("helpers", function()
