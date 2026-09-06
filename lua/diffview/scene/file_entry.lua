@@ -98,14 +98,23 @@ function FileEntry:init(opt)
   self._extra_owned = opt._extra_owned or {}
 end
 
+---Destroy owned Files. `force` still drops COMMIT/STAGE/CUSTOM buffers
+---unconditionally, but LOCAL buffers stay guarded by `is_buf_in_use`: they
+---represent the user's real file buffer and may be visible in windows
+---outside the diffview (e.g., the tab the user opened from). Force-deleting
+---one would collapse that tab and lose the cursor position there.
 ---@param force? boolean
 function FileEntry:destroy(force)
+  local function force_for(f)
+    return force and f.rev and f.rev.type ~= RevType.LOCAL
+  end
+
   for _, f in ipairs(self.layout:owned_files()) do
-    f:destroy(force)
+    f:destroy(force_for(f))
   end
 
   for _, f in ipairs(self._extra_owned) do
-    f:destroy(force)
+    f:destroy(force_for(f))
   end
   self._extra_owned = {}
 
