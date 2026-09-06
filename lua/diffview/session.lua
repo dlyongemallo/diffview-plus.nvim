@@ -197,7 +197,7 @@ end
 ---@field range? integer[] `{line1, line2}` for `:DiffviewFileHistory` ranges.
 ---@field tabpage_order integer Sort key so restored views come back in their original tab order.
 ---@field selected_file? string Repo-relative path of the active file (`DiffviewOpen` only).
----@field cursor_map? table<string, table> Repo-relative path → `winsaveview()` dict for every file visited at save time.
+---@field cursor_map? table<string, table> Repo-relative path → the cursor and viewport of every file visited at save time. The loose type is deliberate: this is whatever the sidecar holds. `sanitize_cursor_map` turns it into `StandardView.CarryState`s on read.
 ---@field toplevel? string Repo root, for debugging.
 
 ---Absolute paths of LOCAL buffers the prior diffview session created
@@ -266,7 +266,20 @@ local function capture_view(view)
   end
 
   if view.cursor_map and next(view.cursor_map) ~= nil then
-    entry.cursor_map = view.cursor_map
+    -- Only the viewport goes to disk, and in the bare `winsaveview` shape
+    -- v1 has always written, so a sidecar from here still restores in an
+    -- older checkout that hands the entry straight to `winrestview`. A
+    -- buffer handle and the name it carried describe this nvim run, and
+    -- `sanitize_cursor_map` would drop them anyway.
+    local cursor_map = {}
+    for path, state in pairs(view.cursor_map) do
+      if type(state.winview) == "table" then
+        cursor_map[path] = state.winview
+      end
+    end
+    if next(cursor_map) ~= nil then
+      entry.cursor_map = cursor_map
+    end
   end
 
   return entry
@@ -401,10 +414,11 @@ local function warn_failed(err)
   end
 end
 
----Filter a raw sidecar `cursor_map` to string→table entries, or nil
----if nothing usable remains.
+---Turn a raw sidecar `cursor_map` into `StandardView.CarryState`s, or nil if
+---nothing usable remains. Buffer handles do not survive. This nvim run may
+---have handed the same number to an unrelated file.
 ---@param raw any
----@return table<string, table>?
+---@return table<string, StandardView.CarryState>?
 local function sanitize_cursor_map(raw)
   if type(raw) ~= "table" then
     return nil
@@ -412,7 +426,8 @@ local function sanitize_cursor_map(raw)
   local out = {}
   for path, value in pairs(raw) do
     if type(path) == "string" and type(value) == "table" then
-      out[path] = value
+      -- A sidecar written before the carry holds the `winsaveview` dict bare.
+      out[path] = { winview = type(value.winview) == "table" and value.winview or value }
     end
   end
   if next(out) == nil then

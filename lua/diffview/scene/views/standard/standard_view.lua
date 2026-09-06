@@ -15,6 +15,11 @@ local utils = lazy.require("diffview.utils") ---@module "diffview.utils"
 local api = vim.api
 local await, pawait = async.await, async.pawait
 
+-- Nvim 0.12 added `vim.text.diff`. `vim.diff` still works, but LuaLS marks
+-- it deprecated. Alias once, as `inline_diff` does.
+---@diagnostic disable-next-line: deprecated
+local diff = vim.diff
+
 local M = {}
 
 ---Predicate matching `DiffView.update_files_impl`'s cancellation guard.
@@ -36,10 +41,35 @@ end
 ---@field cur_entry FileEntry
 ---@field layouts table<Layout, Layout>
 ---@field no_panel? boolean # Per-view `--no-panel` override. When set, takes precedence over the panel's `show` config (`nil` means defer to config).
----@field cursor_map table<string, table> # Repo-relative path → `winsaveview()` dict; consumed by `file_open_new` to restore cursor + viewport on first open after session restore.
+---@field cursor_map table<string, StandardView.CarryState> # Repo-relative path → the cursor and viewport last seen for that path. Consumed the next time the path opens.
 ---@field package _set_file_in_flight Future? # Active `_set_file` worker; queued callers await this so `await(set_file)` returns only after the latest pending file is opened.
 ---@field package _set_file_pending FileEntry? # Newest file queued while `_set_file_in_flight` is set; the worker picks it up before terminating.
 local StandardView = oop.create_class("StandardView", View.__get())
+
+---The key the arriving entry will look its state up under, when a rename links
+---it to the entry being left. `--follow` lists a file under its old name in
+---every commit older than the rename, so a step across that commit leaves one
+---path and arrives at another while the code stays the same. Only the entry
+---for the renaming commit carries both names.
+---@param from FileEntry # The entry being left.
+---@param to FileEntry? # The entry being opened.
+---@return string?
+function StandardView._rename_alias(from, to)
+  if not (to and to.path) then
+    return nil
+  end
+  -- `oldpath` also names the source of a copy (status `C`), where the two
+  -- paths are two files rather than one file under two names. Line-trace
+  -- entries carry no status at all, so exclude copies rather than demand a
+  -- rename.
+  if from.oldpath == to.path and from.status ~= "C" then
+    return to.path
+  end
+  if to.oldpath == from.path and to.status ~= "C" then
+    return to.path
+  end
+  return nil
+end
 
 ---StandardView constructor
 function StandardView:init(opt)
@@ -83,40 +113,199 @@ function StandardView:init(opt)
 
   self.cursor_map = opt.cursor_map or {}
 
-  -- Snapshot the leaving file's view state before `_detach_files_for_next`
-  -- strips the window association, so mid-navigation saves keep cursor +
-  -- viewport for every visited file.
-  self.emitter:on("file_open_pre", function(_, _, cur_entry)
+  -- Snapshot the leaving file's view state on every swap, so mid-navigation
+  -- saves keep cursor + viewport for every visited file.
+  self.emitter:on("file_open_pre", function(_, target, cur_entry)
     if cur_entry and cur_entry.path then
-      self:snapshot_main_view(cur_entry.path)
+      self:snapshot_main_view(cur_entry.path, StandardView._rename_alias(cur_entry, target))
+    end
+  end)
+
+  -- A re-visited entry gets no `file_open_new`, so a step back would keep the
+  -- cursor the last visit left behind. `opened` is still false on a first
+  -- open, leaving those to `file_open_new` and its default placement.
+  self.emitter:on("file_open_post", function(_, entry)
+    if entry and entry.opened and entry.path then
+      self:restore_main_view(entry.path)
     end
   end)
 
   self.emitter:on("post_layout", utils.bind(self.post_layout, self))
 end
 
+---@class StandardView.CarryState
+---@field winview table # A `winsaveview()` dict.
+---@field bufnr? integer # The buffer `winview` was captured in. Missing on a state restored from a session sidecar.
+---@field bufname? string # The name `bufnr` carried at capture time.
+
+---@param winid integer
+---@return StandardView.CarryState?
+local function capture_winview(winid)
+  local ok, winview = pcall(api.nvim_win_call, winid, function()
+    return vim.fn.winsaveview()
+  end)
+  if not (ok and type(winview) == "table") then
+    return nil
+  end
+  local bufnr = api.nvim_win_get_buf(winid)
+  return { winview = winview, bufnr = bufnr, bufname = api.nvim_buf_get_name(bufnr) }
+end
+
+---Open the folds hiding the cursor line in `winid`.
+---
+---With `'foldlevel'` at its default of 0 a diff buffer arrives with every
+---unchanged region closed, which is exactly where a carried cursor tends to
+---land: the line it followed is context in the commit being opened, not part
+---of its diff. A cursor inside a closed fold tells the reader nothing about
+---where it went.
+---
+---Only the main window is revealed, for the same reason only it is placed.
+---Doing it in the layout's other windows instead drags the main cursor off its
+---line, because `'cursorbind'` syncs on the move `zv` makes there. The other
+---panes come out revealed anyway, which `file_history_cursor_carry_spec`
+---asserts. `pcall` because a pane may hold a null buffer, or have folding
+---switched off entirely.
+---@param winid integer
+local function reveal_cursor_line(winid)
+  pcall(api.nvim_win_call, winid, function()
+    vim.cmd("normal! zv")
+  end)
+end
+
+---Translate `state` into the window's current buffer, then apply it.
+---@param winid integer
+---@param state StandardView.CarryState
+---@return boolean # `true` when `winrestview` ran without error.
+local function apply_winview(winid, state)
+  local from_buf = state.bufnr
+  -- Neovim can hand a wiped buffer's handle to another file. Diffing against
+  -- that file would place the cursor on an unrelated line.
+  if
+    from_buf
+    and not (api.nvim_buf_is_valid(from_buf) and api.nvim_buf_get_name(from_buf) == state.bufname)
+  then
+    from_buf = nil
+  end
+
+  local target =
+    StandardView._translate_winview(state.winview, from_buf, api.nvim_win_get_buf(winid))
+
+  return (pcall(api.nvim_win_call, winid, function()
+    vim.fn.winrestview(target)
+  end))
+end
+
+---A buffer's contents as `vim.diff` input. Without the trailing newline
+---`vim.diff` reports an addition or deletion at EOF as a modification of the
+---adjacent line. `inline_diff` terminates its input the same way.
+---@param bufnr integer
+---@return string
+local function buf_text(bufnr)
+  return table.concat(api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n") .. "\n"
+end
+
+---Map a line number from the `a` side of a diff onto the `b` side. A line
+---following a hunk shifts by that hunk's size delta. A line inside a hunk has
+---no single counterpart, so it maps to the hunk's start in `b`.
+---@param hunks integer[][] # `vim.diff` "indices" hunks: `{ start_a, count_a, start_b, count_b }`, ascending.
+---@param lnum integer
+---@return integer
+function StandardView._map_lnum(hunks, lnum)
+  local delta = 0
+
+  for _, hunk in ipairs(hunks) do
+    local start_a, count_a, start_b, count_b = hunk[1], hunk[2], hunk[3], hunk[4]
+
+    if count_a == 0 then
+      -- Pure insertion, anchored *after* `start_a`.
+      if lnum <= start_a then
+        break
+      end
+      delta = delta + count_b
+    else
+      local last_a = start_a + count_a - 1
+      if lnum < start_a then
+        break
+      elseif lnum <= last_a then
+        -- `start_b` is the hunk's first line in `b`. When the hunk only
+        -- deletes, it is the last surviving line before the hunk.
+        return math.max(1, start_b)
+      end
+      delta = delta + count_b - count_a
+    end
+  end
+
+  return math.max(1, lnum + delta)
+end
+
+---Rewrite a `winsaveview` dict so its cursor points at the same code in
+---`to_buf` as it did in `from_buf`. Returns `winview` unchanged whenever the
+---translation can't be computed, which is the untranslated behaviour.
+---@param winview table # `winsaveview()` dict.
+---@param from_buf integer? # Buffer `winview` was captured in.
+---@param to_buf integer # Buffer `winview` is about to be applied in.
+---@return table
+function StandardView._translate_winview(winview, from_buf, to_buf)
+  if type(winview.lnum) ~= "number" or from_buf == nil or from_buf == to_buf then
+    return winview
+  end
+  if not (api.nvim_buf_is_valid(from_buf) and api.nvim_buf_is_loaded(from_buf)) then
+    return winview
+  end
+
+  local ok, hunks = pcall(diff, buf_text(from_buf), buf_text(to_buf), { result_type = "indices" })
+
+  if not (ok and type(hunks) == "table") then
+    return winview
+  end
+
+  local lnum = StandardView._map_lnum(hunks, winview.lnum)
+
+  if lnum == winview.lnum then
+    return winview
+  end
+
+  local out = vim.deepcopy(winview)
+  out.lnum = lnum
+
+  if type(out.topline) == "number" then
+    -- Keeps the cursor at its old screen offset instead of outside the
+    -- replayed window.
+    out.topline = math.max(1, out.topline + (lnum - winview.lnum))
+  end
+
+  return out
+end
+
 ---Snapshot the main diff window's cursor + viewport into
----`self.cursor_map[path]`. No-op if the main window is unavailable.
+---`self.cursor_map[path]`, along with the buffer it was taken in. The buffer
+---is what lets `restore_main_view` translate the line number instead of
+---replaying it raw. No-op if the main window is unavailable.
 ---@param path string repo-relative file path; the map key.
-function StandardView:snapshot_main_view(path)
+---@param alias? string A second key holding the same state, for a file the
+---next entry lists under another name. See `_rename_alias`.
+function StandardView:snapshot_main_view(path, alias)
   local layout = self.cur_layout
   local main = layout and layout:get_main_win()
   if not (main and main.id and api.nvim_win_is_valid(main.id)) then
     return
   end
-  local ok, vs = pcall(api.nvim_win_call, main.id, function()
-    return vim.fn.winsaveview()
-  end)
-  if ok and type(vs) == "table" then
-    self.cursor_map[path] = vs
+
+  local entry = capture_winview(main.id)
+  if entry then
+    self.cursor_map[path] = entry
+    if alias and alias ~= path then
+      self.cursor_map[alias] = entry
+    end
   end
 end
 
----Pop and apply the saved `winsaveview` dict for `path`. One-shot per
----path: the entry is removed once successfully applied, so re-visits
----fall through to the caller's default cursor placement. A failed apply
----(main window unavailable, or `winrestview` errors) leaves the saved
----state in place so a later attempt can still restore it.
+---Pop and apply the saved view state for `path`. Diffing the snapshotted
+---buffer against the arriving one moves the cursor line with its code, so a
+---step lands on the same line of code rather than the same line number.
+---A successful apply drops the entry; the next swap away from `path` puts a
+---fresh one back. A failed apply (no main window, or `winrestview` errors)
+---keeps the entry for a later attempt.
 ---@param path string repo-relative file path.
 ---@return boolean # `true` when a saved state was applied successfully.
 function StandardView:restore_main_view(path)
@@ -129,10 +318,17 @@ function StandardView:restore_main_view(path)
   if not (win and win.id and api.nvim_win_is_valid(win.id)) then
     return false
   end
-  local ok = pcall(api.nvim_win_call, win.id, function()
-    vim.fn.winrestview(target)
-  end)
+
+  if type(target.winview) ~= "table" then
+    return false
+  end
+
+  -- We place only the main window. The layout's other windows follow it
+  -- through `'cursorbind'`.
+  local ok = apply_winview(win.id, target)
+
   if ok then
+    reveal_cursor_line(win.id)
     self.cursor_map[path] = nil
   end
   return ok

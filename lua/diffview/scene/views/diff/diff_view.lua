@@ -655,11 +655,11 @@ end)
 ---listener handles it the same as session-restored state. `winrestview` (the
 ---consumer in `restore_main_view`) clamps the upper bound; we clamp the
 ---lower at 1 so non-positive rows don't reach `nvim_win_set_cursor`.
----@param cursor_map table<string, table>
+---@param cursor_map table<string, StandardView.CarryState>
 ---@param options DiffViewOptions
 function DiffView._seed_cursor_map_from_selection(cursor_map, options)
   if options.selected_row and options.selected_file then
-    cursor_map[options.selected_file] = { lnum = math.max(1, options.selected_row) }
+    cursor_map[options.selected_file] = { winview = { lnum = math.max(1, options.selected_row) } }
   end
 end
 

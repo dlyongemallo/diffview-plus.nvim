@@ -2144,6 +2144,24 @@ view_windo({cmd})                               *diffview-actions-view_windo*
                         layout. These symbols correspond with the figures
                         under |diffview-config-view.x.layout|.
 
+                                                *diffview-cursor-carry*
+Cursor carry ~
+
+When a step lands on another revision of the file you are already reading, the
+cursor stays on the same line of code rather than the same line number.
+Diffview diffs the arriving buffer against the one you are leaving, then maps
+your cursor line through the result. This covers the entry and commit actions
+alike:
+
+        • |diffview-actions-select_next_entry|
+        • |diffview-actions-select_prev_entry|
+        • |diffview-actions-select_next_commit|
+        • |diffview-actions-select_prev_commit|
+
+A line inside a hunk the step introduces has no single counterpart. It lands
+on that hunk's first line, or on the last surviving line before it when the
+hunk only deletes.
+
                                                 *diffview-unused-actions*
 Unused actions ~
 

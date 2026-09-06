@@ -227,7 +227,7 @@ describe("DiffView._seed_cursor_map_from_selection", function()
       selected_row = 42,
       selected_file = "foo.lua",
     })
-    assert.same({ lnum = 42 }, cursor_map["foo.lua"])
+    assert.same({ winview = { lnum = 42 } }, cursor_map["foo.lua"])
   end)
 
   it("clamps the row to 1 when selected_row is 0", function()
@@ -236,7 +236,7 @@ describe("DiffView._seed_cursor_map_from_selection", function()
       selected_row = 0,
       selected_file = "foo.lua",
     })
-    assert.same({ lnum = 1 }, cursor_map["foo.lua"])
+    assert.same({ winview = { lnum = 1 } }, cursor_map["foo.lua"])
   end)
 
   it("clamps the row to 1 when selected_row is negative", function()
@@ -245,7 +245,7 @@ describe("DiffView._seed_cursor_map_from_selection", function()
       selected_row = -5,
       selected_file = "foo.lua",
     })
-    assert.same({ lnum = 1 }, cursor_map["foo.lua"])
+    assert.same({ winview = { lnum = 1 } }, cursor_map["foo.lua"])
   end)
 
   it("leaves cursor_map untouched when selected_file is missing", function()
@@ -261,12 +261,12 @@ describe("DiffView._seed_cursor_map_from_selection", function()
   end)
 
   it("does not overwrite unrelated entries", function()
-    local cursor_map = { ["other.lua"] = { lnum = 7, col = 3 } }
+    local cursor_map = { ["other.lua"] = { winview = { lnum = 7, col = 3 } } }
     DiffView._seed_cursor_map_from_selection(cursor_map, {
       selected_row = 42,
       selected_file = "foo.lua",
     })
-    assert.same({ lnum = 7, col = 3 }, cursor_map["other.lua"])
-    assert.same({ lnum = 42 }, cursor_map["foo.lua"])
+    assert.same({ winview = { lnum = 7, col = 3 } }, cursor_map["other.lua"])
+    assert.same({ winview = { lnum = 42 } }, cursor_map["foo.lua"])
   end)
 end)
