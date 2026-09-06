@@ -133,6 +133,9 @@ DEFAULT CONFIG                                  *diffview.defaults*
         -- so they read like the rest of the buffer. No-op when no parser
         -- is attached for the buffer's filetype.
         deletion_treesitter = true,
+        -- Fold unchanged regions using expression folds. The visible context
+        -- follows `context:N` in 'diffopt' (6 lines when omitted).
+        fold_unchanged = false,
       },
     },
     file_panel = {

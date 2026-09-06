@@ -75,9 +75,12 @@ local INSERT_REPAINT_DEBOUNCE_MS = 150
 ---into a single re-emit so the per-resize-step diff cost doesn't pile up.
 local RESIZE_REPAINT_DEBOUNCE_MS = 100
 
+local INLINE_FOLDEXPR = "v:lua.require'diffview.scene.inline_diff'.foldexpr(v:lnum)"
+
 ---@class Diff1Inline : Diff1
 ---@field a_file vcs.File? Old-side file used only to compute the diff (never rendered in a window).
 ---@field _cached_old_lines string[]? Old-side content captured on first render; reused by repaints so each keystroke-level refresh doesn't re-fetch from disk.
+---@field _fold_bufnr integer? Buffer whose expression folds have been initialized in the inline window.
 ---@field _render_generation integer Bumped on every state transition that invalidates in-flight render work: file swap (`use_entry`), render teardown (`teardown_render`, which covers `destroy` and `FileEntry:convert_layout`), and recreate (`create`). Async passes capture the value at entry and bail when it changes mid-flight, so a stale `_load_old_lines` callback can't overwrite `_cached_old_lines` for a file the user has navigated past or render onto a buffer the view no longer owns. Also covers cached-instance reuse: `StandardView` keeps one layout per class and re-runs `create` on the same instance after a prior `destroy`, so a sticky destroyed flag would block reuse; the monotonic counter does not.
 ---@field _repaint_bufnr integer? Buffer id the repaint autocmds are attached to (nil when no autocmds are installed).
 ---@field _repaint_debounced CancellableFn? Trailing-edge debounced `_repaint` used for the insert-mode `TextChangedI` hook.
@@ -406,6 +409,7 @@ function Diff1Inline:_repaint()
   -- `_repaint`.
   local new_lines = self.b.file.nulled and {} or api.nvim_buf_get_lines(bufnr, 0, -1, false)
   inline_diff.render(bufnr, old_lines, new_lines, render_opts(self.b.id))
+  self:_update_folds()
 end
 
 ---Install buffer-scoped autocmds that repaint on edits. Fires on any
@@ -503,6 +507,35 @@ local function register_repaint_autocmds(self, bufnr)
   end
 end
 
+function Diff1Inline:_update_folds()
+  local conf = config.get_config()
+  if not conf.view.inline.fold_unchanged then
+    return
+  end
+
+  local bufnr = self.b.file.bufnr --[[@as integer ]]
+  local context = tonumber(vim.o.diffopt:match("context:(%d+)")) or 6
+  inline_diff.update_fold_ranges(bufnr, context)
+
+  local winid = self.b.id
+  pcall(api.nvim_win_call, winid, function()
+    local configured = self._fold_bufnr == bufnr
+      and vim.wo.foldmethod == "expr"
+      and vim.wo.foldexpr == INLINE_FOLDEXPR
+    if not configured then
+      vim.wo.foldmethod = "expr"
+      vim.wo.foldexpr = INLINE_FOLDEXPR
+      vim.wo.foldenable = true
+      vim.wo.foldlevel = conf.view.foldlevel
+      self._fold_bufnr = bufnr
+    else
+      -- Reassigning 'foldexpr' invalidates expression folds without resetting
+      -- folds the user manually opened or closed, unlike zX/'foldlevel'.
+      vim.wo.foldexpr = INLINE_FOLDEXPR
+    end
+  end)
+end
+
 ---Install window-scoped state once the b buffer is visible: turn off
 ---native diff mode (so it doesn't fight the extmark rendering), scope the
 ---namespace to this window (issue #156), and register repaint autocmds.
@@ -526,8 +559,13 @@ function Diff1Inline:_install_window_hooks()
   pcall(api.nvim_set_option_value, "diff", false, { win = winid })
   pcall(api.nvim_set_option_value, "scrollbind", false, { win = winid })
   pcall(api.nvim_set_option_value, "cursorbind", false, { win = winid })
-  pcall(api.nvim_set_option_value, "foldmethod", "manual", { win = winid })
-  pcall(api.nvim_set_option_value, "foldenable", false, { win = winid })
+
+  if config.get_config().view.inline.fold_unchanged then
+    self:_update_folds()
+  else
+    pcall(api.nvim_set_option_value, "foldmethod", "manual", { win = winid })
+    pcall(api.nvim_set_option_value, "foldenable", false, { win = winid })
+  end
 
   inline_diff.attach_to_window(bufnr, winid)
   register_repaint_autocmds(self, bufnr)
@@ -731,6 +769,7 @@ function Diff1Inline:teardown_render()
   end
   self._repaint_bufnr = nil
   self._cached_old_lines = nil
+  self._fold_bufnr = nil
   if self.b and self.b.file and self.b.file.bufnr then
     inline_diff.detach(self.b.file.bufnr)
   end

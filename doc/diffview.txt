@@ -1176,6 +1176,14 @@ view.inline                                     *diffview-config-view.inline*
                 unchanged, only the foreground colouring of the deleted
                 text is affected.
 
+            {fold_unchanged} (boolean)
+                Fold unchanged regions in the `diff1_inline` layout using
+                expression folds. Default: `false`. The number of visible
+                context lines follows `context:N` in |'diffopt'|, defaulting
+                to 6 when omitted. Pure-deletion anchors remain unfolded so
+                their deleted virtual lines stay visible. The initial fold
+                level is controlled by |diffview-config-view.foldlevel|.
+
 view.file_history.pin_local                     *diffview-config-view.file_history.pin_local*
         Type: `boolean`, Default: `false`
 
