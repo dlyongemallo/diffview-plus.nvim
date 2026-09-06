@@ -3,24 +3,8 @@ local fmt = string.format
 
 local M = {}
 
-M.plugin_deps = {
-  {
-    name = "nvim-web-devicons",
-    optional = true,
-  },
-  {
-    name = "mini.icons",
-    optional = true,
-  },
-}
-
----@param cmd string|string[]
----@return string[] stdout
----@return integer code
-local function system_list(cmd)
-  local out = vim.fn.systemlist(cmd)
-  return out or {}, vim.v.shell_error
-end
+-- Icon plugins are alternatives; only one is needed for icons to render.
+M.icon_providers = { "nvim-web-devicons", "mini.icons" }
 
 local function lualib_available(name)
   local ok, _ = pcall(require, name)
@@ -39,35 +23,31 @@ function M.check()
     )
   end
 
-  health.start("Checking plugin dependencies")
+  health.start("Checking icon provider")
 
-  local missing_essential = false
-
-  for _, plugin in ipairs(M.plugin_deps) do
-    if lualib_available(plugin.name) then
-      health.ok(plugin.name .. " installed.")
-    else
-      if plugin.optional then
-        health.warn(fmt("Optional dependency '%s' not found.", plugin.name))
-      else
-        missing_essential = true
-        health.error(fmt("Dependency '%s' not found!", plugin.name))
-      end
+  local found_provider
+  for _, name in ipairs(M.icon_providers) do
+    if lualib_available(name) then
+      found_provider = name
+      break
     end
+  end
+
+  if found_provider then
+    health.ok(fmt("Icon provider found: %s.", found_provider))
+  else
+    health.info(
+      fmt(
+        "No icon provider found (%s). Icons will be disabled; set `use_icons = false` to silence this.",
+        table.concat(M.icon_providers, " or ")
+      )
+    )
   end
 
   health.start("Checking VCS tools");
   (function()
-    if missing_essential then
-      health.warn(
-        "Cannot perform checks on external dependencies without all essential plugin dependencies installed!"
-      )
-      return
-    end
-
     health.info("The plugin requires at least one of the supported VCS tools to be valid.")
 
-    local has_valid_adapter = false
     local adapter_kinds = {
       { class = require("diffview.vcs.adapters.jj").JjAdapter, name = "Jujutsu" },
       { class = require("diffview.vcs.adapters.git").GitAdapter, name = "Git" },
@@ -75,27 +55,34 @@ function M.check()
       { class = require("diffview.vcs.adapters.p4").P4Adapter, name = "Perforce" },
     }
 
+    local ok_adapters = {}
+    local failed_adapters = {}
+
     for _, kind in ipairs(adapter_kinds) do
       local bs = kind.class.bootstrap
       if not bs.done then
         kind.class.run_bootstrap()
       end
 
-      if bs.version_string then
-        health.ok(fmt("%s found.", kind.name))
-      end
-
       if bs.ok then
-        health.ok(fmt("%s is up-to-date. (%s)", kind.name, bs.version_string))
-        has_valid_adapter = true
+        table.insert(ok_adapters, { name = kind.name, bs = bs })
       else
-        health.warn(bs.err or (kind.name .. ": Unknown error"))
+        table.insert(failed_adapters, { name = kind.name, bs = bs })
       end
     end
 
-    if not has_valid_adapter then
-      health.error("No valid VCS tool was found!")
+    for _, entry in ipairs(ok_adapters) do
+      health.ok(fmt("%s is up-to-date. (%s)", entry.name, entry.bs.version_string))
     end
+
+    if #ok_adapters > 0 then
+      return
+    end
+
+    for _, entry in ipairs(failed_adapters) do
+      health.warn(entry.bs.err or (entry.name .. ": Unknown error"))
+    end
+    health.error("No valid VCS tool was found!")
   end)()
 end
 
