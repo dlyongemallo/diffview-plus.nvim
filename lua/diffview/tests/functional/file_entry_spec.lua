@@ -425,17 +425,29 @@ describe("diffview.scene.file_entry", function()
     eq(0, #entry._extra_owned)
   end)
 
-  it("forwards force flag to contained files when destroyed", function()
+  it("forwards force to non-LOCAL files but guards LOCAL when destroyed", function()
     local seen = {}
     local layout_destroyed = false
 
+    -- LOCAL files stand in for the user's real working-tree buffer, which
+    -- may be visible in other tabs; `FileEntry:destroy` must never propagate
+    -- `force=true` to them. Non-LOCAL sides (STAGE/COMMIT) remain forced so
+    -- `refresh_files({ force = true })` still discards their virtual buffers.
     local files_list = {
       {
+        rev = { type = RevType.STAGE },
         destroy = function(_, force)
           seen[#seen + 1] = force
         end,
       },
       {
+        rev = { type = RevType.LOCAL },
+        destroy = function(_, force)
+          seen[#seen + 1] = force
+        end,
+      },
+      {
+        rev = { type = RevType.COMMIT },
         destroy = function(_, force)
           seen[#seen + 1] = force
         end,
@@ -466,7 +478,50 @@ describe("diffview.scene.file_entry", function()
 
     entry:destroy(true)
 
-    eq({ true, true }, seen)
+    eq({ true, false, true }, seen)
     eq(true, layout_destroyed)
+  end)
+
+  it("passes force=false through unchanged regardless of rev type", function()
+    local seen = {}
+
+    local files_list = {
+      {
+        rev = { type = RevType.STAGE },
+        destroy = function(_, force)
+          seen[#seen + 1] = force
+        end,
+      },
+      {
+        rev = { type = RevType.LOCAL },
+        destroy = function(_, force)
+          seen[#seen + 1] = force
+        end,
+      },
+    }
+    local layout = {
+      files = function()
+        return files_list
+      end,
+      owned_files = function()
+        return files_list
+      end,
+      destroy = function() end,
+    }
+
+    local entry = FileEntry({
+      adapter = { ctx = { toplevel = "/tmp" } },
+      path = "a.txt",
+      oldpath = nil,
+      revs = {},
+      layout = layout,
+      status = "M",
+      stats = {},
+      kind = "working",
+    })
+
+    entry:destroy(false)
+
+    eq({ false, false }, seen)
   end)
 end)
