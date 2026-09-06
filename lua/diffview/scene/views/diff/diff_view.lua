@@ -853,6 +853,16 @@ local update_files_impl = debounce.debounce_trailing(
             end
 
             if replace_noop then
+              -- Preserve the user's cycled/set layout across the refresh:
+              -- `get_updated_files` always builds new entries with the config
+              -- default, so without this the layout silently resets to the
+              -- default whenever `force_entry_refresh_on_noop` fires (jj on
+              -- any LOCAL-touching range: every tab_enter, focus_gained, poll,
+              -- or explicit `R` refresh).
+              if new_file.layout.class ~= old_file.layout.class then
+                new_file:convert_layout(old_file.layout.class --[[@as Layout ]])
+              end
+
               if self.panel.cur_file == old_file then
                 self.panel:set_cur_file(new_file)
               end

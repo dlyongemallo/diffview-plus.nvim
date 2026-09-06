@@ -102,6 +102,89 @@ describe("diffview.scene.views.diff.DiffView", function()
       end)
     )
 
+    -- Regression: on adapters whose `force_entry_refresh_on_noop` returns
+    -- true (jj on any LOCAL-touching range), the NOOP branch destroys the
+    -- old entry and installs a fresh one built by `get_updated_files` with
+    -- the config default layout. Without preserving the old entry's layout
+    -- class across the swap, any `cycle_layout` / `set_layout` choice was
+    -- silently reset by every refresh (tab_enter, FocusGained, poll, R).
+    -- Bug: dlyongemallo/diffview-plus.nvim#312.
+    it(
+      "preserves the entry's layout class when force_entry_refresh_on_noop replaces it",
+      test_utils.async_test(function()
+        local Diff2Hor = require("diffview.scene.layouts.diff_2_hor").Diff2Hor
+        local Diff2Ver = require("diffview.scene.layouts.diff_2_ver").Diff2Ver
+
+        local repo = make_repo()
+        local view
+
+        local ok, err = pcall(function()
+          local file_spec = {
+            working = {
+              { path = "init.txt", status = "M", stats = { additions = 0, deletions = 0 } },
+            },
+            staged = {},
+            conflicting = {},
+          }
+
+          view = CDiffView({
+            git_root = repo,
+            left = Rev(RevType.COMMIT, run({ "git", "rev-parse", "HEAD" }, repo), true),
+            right = Rev(RevType.LOCAL),
+            files = file_spec,
+            update_files = function()
+              return file_spec
+            end,
+            get_file_data = function()
+              return {}
+            end,
+          })
+
+          view:open()
+          vim.wait(2000, function()
+            return view.initialized
+          end, 10)
+
+          local original = view.files.working[1]
+          assert.is_truthy(original)
+          assert.True(original.layout:instanceof(Diff2Hor))
+
+          -- Simulate `cycle_layout`: swap the entry's stored layout to a
+          -- non-default class.
+          original:convert_layout(Diff2Ver)
+          eq(Diff2Ver, original.layout.class)
+
+          -- Force the NOOP replace-entry branch, as jj does whenever the
+          -- range touches LOCAL.
+          view.adapter.force_entry_refresh_on_noop = function()
+            return true
+          end
+
+          local refresh_done = false
+          view:update_files(function()
+            refresh_done = true
+          end)
+          vim.wait(2000, function()
+            return refresh_done
+          end, 10)
+          assert.is_true(refresh_done)
+
+          local refreshed = view.files.working[1]
+          assert.is_truthy(refreshed)
+          -- The entry was recreated (that's the whole point of the branch),
+          -- but the user's chosen layout class must survive the swap.
+          assert.are_not.equal(original, refreshed)
+          eq(Diff2Ver, refreshed.layout.class)
+        end)
+
+        close_view(view)
+        cleanup_repo(repo)
+        if not ok then
+          error(err)
+        end
+      end)
+    )
+
     -- Regression: the wrapped impl signature were changed from
     -- (self, callback) to (self, opts, callback). Legacy callers using
     -- update_files(callback) would otherwise dereference opts.force on a
