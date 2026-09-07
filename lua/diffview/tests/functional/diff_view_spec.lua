@@ -185,6 +185,99 @@ describe("diffview.scene.views.diff.DiffView", function()
       end)
     )
 
+    -- The NOOP-keep path routes LOCAL sides through
+    -- `adapter:on_local_buffer_reused` so working-copy content is refreshed
+    -- in place, without destroying and re-loading the diff buffers. Jj's
+    -- adapter relies on this (its LOCAL `object_name()` is always "UNKNOWN",
+    -- so `refresh_revs` can't detect a rewritten working copy) and dropped
+    -- its `force_entry_refresh_on_noop` override so this path is taken
+    -- instead of the entry-swap path that briefly attaches diff windows to
+    -- `diffview://null`.
+    it(
+      "calls on_local_buffer_reused for LOCAL files kept across a NOOP refresh",
+      test_utils.async_test(function()
+        local repo = make_repo()
+        local view
+
+        local ok, err = pcall(function()
+          local file_spec = {
+            working = {
+              { path = "init.txt", status = "M", stats = { additions = 0, deletions = 0 } },
+            },
+            staged = {},
+            conflicting = {},
+          }
+
+          view = CDiffView({
+            git_root = repo,
+            left = Rev(RevType.COMMIT, run({ "git", "rev-parse", "HEAD" }, repo), true),
+            right = Rev(RevType.LOCAL),
+            files = file_spec,
+            update_files = function()
+              return file_spec
+            end,
+            get_file_data = function()
+              return {}
+            end,
+          })
+
+          view:open()
+          vim.wait(2000, function()
+            return view.initialized
+          end, 10)
+
+          local entry = view.files.working[1]
+          assert.is_truthy(entry)
+
+          -- Stamp a scratch bufnr on the LOCAL side. The CDiffView test
+          -- harness's `get_file_data` is a no-op and the async `set_file`
+          -- that would normally load LOCAL buffers is fire-and-forget
+          -- from `update_files_impl`, so `bufnr` may still be nil at this
+          -- point. Stamping it deterministically makes the
+          -- `nvim_buf_is_valid` gate pass and gives us a stable value to
+          -- assert on.
+          local local_file
+          for _, f in ipairs(entry.layout:files()) do
+            if f.rev.type == RevType.LOCAL then
+              local_file = f
+              break
+            end
+          end
+          assert.is_truthy(local_file)
+          local scratch = vim.api.nvim_create_buf(false, true)
+          local_file.bufnr = scratch
+
+          local reused_bufnrs = {}
+          view.adapter.on_local_buffer_reused = function(_, bufnr)
+            table.insert(reused_bufnrs, bufnr)
+          end
+
+          local refresh_done = false
+          view:update_files(function()
+            refresh_done = true
+          end)
+          vim.wait(2000, function()
+            return refresh_done
+          end, 10)
+          assert.is_true(refresh_done)
+
+          -- Kept-entry path: the entry survives (git's default) and the
+          -- LOCAL bufnr was handed to `on_local_buffer_reused`. Jj drops
+          -- its `force_entry_refresh_on_noop` override so this is the
+          -- path it takes too.
+          eq(entry, view.files.working[1])
+          assert.is_true(#reused_bufnrs >= 1)
+          eq(scratch, reused_bufnrs[#reused_bufnrs])
+        end)
+
+        close_view(view)
+        cleanup_repo(repo)
+        if not ok then
+          error(err)
+        end
+      end)
+    )
+
     -- Regression: the wrapped impl signature were changed from
     -- (self, callback) to (self, opts, callback). Legacy callers using
     -- update_files(callback) would otherwise dereference opts.force on a

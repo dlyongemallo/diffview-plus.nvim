@@ -886,6 +886,19 @@ local update_files_impl = debounce.debounce_trailing(
               if new_head then
                 old_file:update_heads(new_head)
               end
+
+              -- Give the adapter a chance to refresh LOCAL buffer content in
+              -- place. Jj rewrites working-copy files even when the LOCAL
+              -- rev's `object_name()` is stable (it's always "UNKNOWN"), so
+              -- `refresh_revs` can't catch that drift and the NOOP branch
+              -- would otherwise leave the LOCAL side showing stale content.
+              -- `on_local_buffer_reused` is a no-op for adapters that don't
+              -- rewrite working-copy files (git, hg).
+              for _, f in ipairs(old_file.layout:files()) do
+                if f.rev.type == RevType.LOCAL and f.bufnr and api.nvim_buf_is_valid(f.bufnr) then
+                  self.adapter:on_local_buffer_reused(f.bufnr)
+                end
+              end
             end
           end
 

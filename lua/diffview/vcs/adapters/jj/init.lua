@@ -677,15 +677,12 @@ function JjAdapter:refresh_revs(rev_arg, left, right)
   return new_left, new_right
 end
 
----@param left Rev
----@param right Rev
----@return boolean
-function JjAdapter:force_entry_refresh_on_noop(left, right)
-  return self:has_local(left, right)
-end
-
----Jj may rewrite working-copy files when revisions change, so reload the
----buffer from disk when it is reused.
+---Jj may rewrite working-copy files (its working copy is a commit) even
+---when the LOCAL rev's `object_name()` looks unchanged, so the diff view's
+---NOOP-keep path routes every LOCAL side through this hook to catch the
+---rewrite via `checktime`. Overriding `force_entry_refresh_on_noop` to
+---force a full entry rebuild would also work but tears down and re-loads
+---the diff buffers, briefly attaching them to `diffview://null`.
 ---@param bufnr integer
 function JjAdapter:on_local_buffer_reused(bufnr)
   local api = vim.api

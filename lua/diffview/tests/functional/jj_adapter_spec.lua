@@ -145,24 +145,27 @@ describe("diffview.vcs.adapters.jj", function()
   end)
 
   describe("force_entry_refresh_on_noop()", function()
-    it("returns true for ranges that include LOCAL", function()
+    -- Jj no longer forces an entry rebuild on NOOP: the diff view's
+    -- NOOP-keep path now routes LOCAL sides through `on_local_buffer_reused`
+    -- (checktime), which reloads any jj-rewritten working-copy content in
+    -- place without briefly attaching diff windows to `diffview://null`.
+    it("inherits the base 'false' for every rev pair", function()
       local adapter = new_adapter()
-      local ok = adapter:force_entry_refresh_on_noop(
-        adapter.Rev(RevType.COMMIT, "left_hash"),
-        adapter.Rev(RevType.LOCAL)
+
+      eq(
+        false,
+        adapter:force_entry_refresh_on_noop(
+          adapter.Rev(RevType.COMMIT, "left_hash"),
+          adapter.Rev(RevType.LOCAL)
+        )
       )
-
-      eq(true, ok)
-    end)
-
-    it("returns false for commit-to-commit ranges", function()
-      local adapter = new_adapter()
-      local ok = adapter:force_entry_refresh_on_noop(
-        adapter.Rev(RevType.COMMIT, "left_hash"),
-        adapter.Rev(RevType.COMMIT, "right_hash")
+      eq(
+        false,
+        adapter:force_entry_refresh_on_noop(
+          adapter.Rev(RevType.COMMIT, "left_hash"),
+          adapter.Rev(RevType.COMMIT, "right_hash")
+        )
       )
-
-      eq(false, ok)
     end)
   end)
 
