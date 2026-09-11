@@ -195,6 +195,54 @@ describe("select_change_here", function()
     eq("body 12", line_at(main))
   end)
 
+  it("reports the end of the history walking toward the newer commits, even mid-load", function()
+    local main = open_on("body 12")
+    local utils = require("diffview.utils")
+    local original_info, message = utils.info, nil
+    utils.info = function(msg)
+      message = msg
+    end
+    -- Entries are appended at the older end, so the newest commit is in place
+    -- from the start and nothing newer can still be on its way.
+    view.panel.updating = true
+
+    view:select_change_here(-1)
+
+    local got = vim.wait(10000, function()
+      return message ~= nil
+    end)
+    utils.info = original_info
+    view.panel.updating = false
+
+    assert.is_true(got, "the walk never reported anything")
+    assert.is_falsy(message:match("still loading"))
+    eq("body 12", line_at(main))
+  end)
+
+  it("gives up when the view loses its tabpage", function()
+    -- Nothing older changes `body 12`, so a walk that runs to the end would
+    -- report that; giving up early reports nothing.
+    open_on("body 12")
+    local utils = require("diffview.utils")
+    local original_info, message = utils.info, nil
+    utils.info = function(msg)
+      message = msg
+    end
+    -- The walk yields on every read, and a view whose tabpage is no longer
+    -- current must not move the cursor or report anything when it resumes.
+    vim.cmd("tabnew")
+
+    view:select_change_here(1)
+    vim.wait(2000, function()
+      return message ~= nil or view.panel.cur_item[1] ~= view.panel.entries[1]
+    end)
+    utils.info = original_info
+    vim.cmd("tabclose")
+
+    eq(nil, message)
+    eq(view.panel.entries[1], view.panel.cur_item[1])
+  end)
+
   it("runs the walk through the registered action", function()
     open_on("body 5 rewritten")
 
@@ -477,15 +525,18 @@ describe("select_change_here across identical bodies", function()
   end)
 end)
 
--- A multi-file history in which the file under the cursor is renamed partway
--- through. Commits older than the rename list the old path and newer ones the
--- new path, so a walk that matches on one name alone goes blind at the rename
--- and runs off the end of the history.
+-- A history in which the file under the cursor is renamed partway through.
+-- Commits older than the rename list the old path and newer ones the new path,
+-- so a walk that matches on one name alone goes blind at the rename and runs
+-- off the end of the history. The rename itself touches no line, so a walk
+-- that crosses it has to pass it over like any other commit that leaves the
+-- line alone. n2 rewrites a line above the one walked to, so the tests can
+-- tell the walked line from the first change.
 --
---   n1  a_other.txt + keep.txt            body 1..20        (20 lines)
---   n2  a_other.txt + keep.txt            body 5 rewritten  (20)
---   n3  a_other.txt + keep.txt -> moved.txt  pure rename    (20)
---   n4  a_other.txt + moved.txt           head 1..10        (30)
+--   n1  a_other.txt + keep.txt            body 1..20                   (20 lines)
+--   n2  a_other.txt + keep.txt            body 2 and 5 rewritten       (20)
+--   n3  a_other.txt + keep.txt -> moved.txt  pure rename               (20)
+--   n4  a_other.txt + moved.txt           head 1..10, body 12 rewritten (30)
 local function make_rename_repo()
   local repo = helpers.init_repo()
   local lines = body("body", 20)
@@ -494,6 +545,7 @@ local function make_rename_repo()
   write(repo, "keep.txt", lines)
   commit(repo, "n1")
 
+  lines[2] = "body 2 rewritten"
   lines[5] = "body 5 rewritten"
   write(repo, "a_other.txt", body("other", 12))
   write(repo, "keep.txt", lines)
@@ -504,6 +556,7 @@ local function make_rename_repo()
   commit(repo, "n3")
 
   lines = vim.list_extend(body("head", 10), lines)
+  lines[22] = "body 12 rewritten"
   write(repo, "moved.txt", lines)
   commit(repo, "n4")
 
@@ -533,9 +586,10 @@ describe("select_change_here across a rename", function()
     return view.cur_layout:get_main_win().id
   end
 
-  ---Open the unfiltered history and wait for n4.
-  local function open_history()
-    view = lib.file_history(nil, {})
+  ---Open the history and wait for n4.
+  ---@param paths string[]? # Path filter. Defaults to the whole repo.
+  local function open_history(paths)
+    view = lib.file_history(nil, paths or {})
     assert.is_not_nil(view)
     view:open()
 
@@ -592,7 +646,7 @@ describe("select_change_here across a rename", function()
     return main
   end
 
-  it("stops on the rename walking toward the older commits", function()
+  it("crosses the rename walking toward the older commits", function()
     open_history()
     -- n4's prepend is the only thing between the cursor and the rename, and it
     -- leaves the line's text alone.
@@ -600,22 +654,136 @@ describe("select_change_here across a rename", function()
 
     view:select_change_here(1)
 
-    -- n3 renames the file without touching a line of it. The cursor's line
-    -- means something else under another path, so the walk opens n3 rather
-    -- than reading past it -- and everything older lists `keep.txt`, which a
-    -- walk matching on `moved.txt` alone would skip all the way off the end.
-    wait_for(2, "moved.txt", 20)
+    -- n3 renames the file without touching a line of it, so it is passed over
+    -- like any other commit that leaves the line alone. Everything older lists
+    -- `keep.txt`, which the walk has to follow the file to: n2 is where the
+    -- line was rewritten, and reading n1 is what tells.
+    wait_for(3, "keep.txt", 20)
     eq("body 5 rewritten", line_at(main_win()))
   end)
 
-  it("stops on the rename walking toward the newer commits", function()
+  it("crosses the rename walking toward the newer commits", function()
     open_history()
-    go_to(3, "keep.txt", "body 12", 20)
+    go_to(4, "keep.txt", "body 12", 20)
 
     view:select_change_here(-1)
 
     -- Same rename from the other side: n3 lists the file under its new name,
-    -- so only `oldpath` connects it to the `keep.txt` under the cursor.
-    wait_for(2, "moved.txt", 20)
+    -- so only `oldpath` connects it to the `keep.txt` under the cursor, and
+    -- past it the file goes by `moved.txt`. n4 is where the line changed.
+    wait_for(1, "moved.txt", 30)
+    eq("body 12 rewritten", line_at(main_win()))
+  end)
+
+  it("crosses the rename in a single-file history", function()
+    -- `--follow` lists n2 and n1 under `keep.txt` even though the history was
+    -- asked for `moved.txt`.
+    open_history({ "moved.txt" })
+    go_to(1, "moved.txt", "body 5 rewritten", 30)
+
+    view:select_change_here(1)
+
+    wait_for(3, "keep.txt", 20)
+    eq("body 5 rewritten", line_at(main_win()))
+  end)
+end)
+
+-- A copy carries `oldpath` too, naming the file it was copied from. Git only
+-- reports copies when asked, and only for sources modified in the same commit,
+-- so `keep.txt` changes as it is copied. `copy.txt` sorts first, so a walk that
+-- takes `oldpath` at face value picks the copy and loses the original.
+--
+--   p1  keep.txt                       body 1..20         (20 lines)
+--   p2  keep.txt -> copy.txt (C100)    copy of p1's text  (20)
+--       keep.txt                       body 12 rewritten  (20)
+local function make_copy_repo()
+  local repo = helpers.init_repo()
+  helpers.run({ "git", "config", "diff.renames", "copies" }, repo)
+  local lines = body("body", 20)
+
+  write(repo, "keep.txt", lines)
+  commit(repo, "p1")
+
+  write(repo, "copy.txt", lines)
+  lines[12] = "body 12 rewritten"
+  write(repo, "keep.txt", lines)
+  commit(repo, "p2")
+
+  return repo
+end
+
+describe("select_change_here across a copy", function()
+  local repo, cwd, view, original_config
+
+  before_each(function()
+    original_config = vim.deepcopy(config.get_config())
+    config.get_config().use_icons = false
+    repo = make_copy_repo()
+    cwd = vim.fn.getcwd()
+    vim.cmd("cd " .. vim.fn.fnameescape(repo))
+  end)
+
+  after_each(function()
+    vim.cmd("cd " .. vim.fn.fnameescape(cwd))
+    helpers.close_view(view)
+    view = nil
+    helpers.cleanup_repo(repo)
+    config.setup(original_config)
+  end)
+
+  local function main_win()
+    return view.cur_layout:get_main_win().id
+  end
+
+  it("stays with the original rather than following the copy", function()
+    view = lib.file_history(nil, {})
+    assert.is_not_nil(view)
+    view:open()
+
+    assert.is_true(
+      vim.wait(10000, function()
+        return view.ready and #view.panel.entries >= 2 and view.cur_layout ~= nil
+      end),
+      "view never became ready"
+    )
+
+    -- The fixture only holds if git reported the copy as one.
+    local copy
+    for _, f in ipairs(view.panel.entries[1].files) do
+      if f.path == "copy.txt" then
+        copy = f
+      end
+    end
+    eq("C", assert(copy).status)
+    eq("keep.txt", copy.oldpath)
+
+    -- Open p1 with the cursor on the line p2 rewrites in `keep.txt`.
+    view:set_file(view.panel.entries[2].files[1])
+    assert.is_true(
+      vim.wait(20000, function()
+        return view.panel.cur_item[1] == view.panel.entries[2]
+          and api.nvim_buf_line_count(api.nvim_win_get_buf(main_win())) == 20
+      end),
+      "p1 never opened"
+    )
+    vim.wait(200)
+    local main = main_win()
+    api.nvim_set_current_win(main)
+    api.nvim_win_set_cursor(main, { 12, 0 })
+    eq("body 12", line_at(main))
+
+    view:select_change_here(-1)
+
+    -- p2 lists `copy.txt` first, with `oldpath` naming `keep.txt`. The copy
+    -- still reads `body 12`; the rewrite happened in `keep.txt`.
+    assert.is_true(
+      vim.wait(20000, function()
+        return view.panel.cur_item[1] == view.panel.entries[1]
+          and view.panel.cur_item[2].path == "keep.txt"
+      end),
+      "the walk never came to rest on keep.txt in p2"
+    )
+    vim.wait(200)
+    eq("body 12 rewritten", line_at(main_win()))
   end)
 end)

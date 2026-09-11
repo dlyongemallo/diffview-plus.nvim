@@ -43,6 +43,10 @@ end
 ---@field package _set_file_pending FileEntry? # Newest file queued while `_set_file_in_flight` is set; the worker picks it up before terminating.
 local StandardView = oop.create_class("StandardView", View.__get())
 
+---Exposed for the file-history walk, whose reads yield the same way the
+---swap does and must stop for the same reasons.
+StandardView.swap_cancelled = swap_cancelled
+
 ---The key the arriving entry will look its state up under, when a rename links
 ---it to the entry being left. `--follow` lists a file under its old name in
 ---every commit older than the rename, so a step across that commit leaves one
@@ -114,7 +118,14 @@ function StandardView:init(opt)
   -- saves keep cursor + viewport for every visited file.
   self.emitter:on("file_open_pre", function(_, target, cur_entry)
     if cur_entry and cur_entry.path then
-      self:snapshot_main_view(cur_entry.path, StandardView._rename_alias(cur_entry, target))
+      local alias = StandardView._rename_alias(cur_entry, target)
+      -- A caller that resolved a line for `target` followed the file there
+      -- itself, across whatever renames lie between, so the two names hold
+      -- one file even when neither entry lists the other's.
+      if not alias and target and target.path ~= cur_entry.path and self:has_carry_lnum(target) then
+        alias = target.path
+      end
+      self:snapshot_main_view(cur_entry.path, alias)
     end
   end)
 
@@ -275,6 +286,13 @@ end
 ---@param lnum integer
 function StandardView:set_carry_lnum(file, lnum)
   self._carry_lnum = { file = file, lnum = lnum }
+end
+
+---Whether a caller has resolved a line for `file` that the next open consumes.
+---@param file FileEntry
+---@return boolean
+function StandardView:has_carry_lnum(file)
+  return self._carry_lnum ~= nil and self._carry_lnum.file == file
 end
 
 ---Pop and apply the saved view state for `path`. Diffing the snapshotted

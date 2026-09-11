@@ -239,7 +239,9 @@ local function pick_change_here_target(self, entry, path)
     -- under the new one, and only the renaming commit carries both. Matching on
     -- `path` alone loses the file at that seam and then skips every commit past
     -- it, which reads to the caller as a history where nothing changes the line.
-    if f.path == path or f.oldpath == path then
+    -- `oldpath` also names the source of a copy (status `C`), which is another
+    -- file, so that pairing is not followed.
+    if f.path == path or (f.oldpath == path and f.status ~= "C") then
       return f
     end
   end
@@ -269,41 +271,45 @@ FileHistoryView.select_change_here = async.void(function(self, dir)
   -- them, so walking toward the older commits the answer is the entry read
   -- before this one: `lines` is its content, and `lnum` the cursor in it.
   local prev
-  -- The panel appends entries as the history loads, so running out of them
-  -- means the end of the history only once it has stopped.
+  -- The panel appends older entries as the history loads, so running out of
+  -- them in that direction means the end of the history only once it has
+  -- stopped. The newest entry is in place from the start.
   local still_loading = false
+  -- The name the file goes by in the entries ahead. A rename changes it.
+  local path = cur_file.path
 
   while true do
     idx = idx + dir
     local entry = self.panel.entries[idx]
     if not entry then
-      still_loading = self.panel.updating
+      still_loading = dir > 0 and self.panel.updating
       break
     end
 
     -- A commit that leaves the path alone cannot have changed the code under
     -- the cursor, so it is passed over without reading a revision at all.
-    local candidate = pick_change_here_target(self, entry, cur_file.path)
+    local candidate = pick_change_here_target(self, entry, path)
 
     if candidate then
       local file = candidate:main_file()
 
-      -- A rename read from the new name toward the old one: the candidate
-      -- still sits at the path under the cursor, and only `oldpath` says the
-      -- line is about to mean something else.
-      local renamed = candidate.oldpath ~= nil and candidate.oldpath ~= candidate.path
-
-      -- Nothing to compare against. The cursor's line means something else
-      -- under another path -- a rename, reached from either side, since a
-      -- commit that merely skips the path never becomes a candidate -- and a
-      -- binary or unreadable revision has no lines at all. Open it and let the
-      -- reader judge.
-      if not file or file.binary or candidate.path ~= cur_file.path or renamed then
+      -- Nothing to compare against: a binary or unreadable revision has no
+      -- lines. Open it and let the reader judge.
+      if not file or file.binary then
         found = candidate
         break
       end
 
       local err, next_lines = await(file.adapter:show(file.path, file.rev))
+
+      -- The read yielded, and the view may have closed or lost its tabpage in
+      -- the meantime. `show` resumes us in a fast event context, where that
+      -- cannot be asked.
+      await(async.scheduler())
+      if self:swap_cancelled() then
+        return
+      end
+
       if err or not next_lines then
         found = candidate
         break
@@ -313,6 +319,14 @@ FileHistoryView.select_change_here = async.void(function(self, dir)
       local before = lnum
       lnum, touched = line_map.between(lines, next_lines, lnum)
       lines = next_lines
+
+      -- A rename lists the file under both names, and the entries beyond it in
+      -- this direction use only one of them: the older ones the old name, the
+      -- newer ones the new one. The content was read under the name the
+      -- candidate itself uses, so the rename is judged like any other commit.
+      if candidate.oldpath and candidate.oldpath ~= candidate.path and candidate.status ~= "C" then
+        path = dir > 0 and candidate.oldpath or candidate.path
+      end
 
       -- Walking toward the newer commits the difference belongs to the
       -- candidate itself. Walking toward the older ones it belongs to the
@@ -348,10 +362,6 @@ FileHistoryView.select_change_here = async.void(function(self, dir)
       prev = candidate
     end
   end
-
-  -- `adapter:show` resumes us in its job's `on_exit`, which is a fast event
-  -- context. Everything below touches the API.
-  await(async.scheduler())
 
   -- Nothing ahead changes this line, so the reader stays where they are rather
   -- than being dropped at the far end of the history.
