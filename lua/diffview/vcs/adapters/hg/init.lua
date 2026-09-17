@@ -705,6 +705,7 @@ HgAdapter.file_history_worker = async.void(function(self, out_stream, opt)
 
     local commit = Commit({
       hash = new_data.right_hash,
+      parent_hash = new_data.left_hash,
       author = new_data.author,
       time = tonumber(new_data.time),
       time_offset = new_data.time_offset,

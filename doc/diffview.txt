@@ -2077,6 +2077,14 @@ select_next_change_here              *diffview-actions-select_next_change_here*
         are skipped too, and a commit that touches it alongside others is read
         at that file rather than at whichever one it lists first.
 
+        Whether a commit changed the line is judged against its own first
+        parent, the diff the view shows for it. So a merge counts when it
+        brought the change onto the branch it was merged into, whatever the
+        order the log lists the two sides in, and the commit that added the
+        file counts for every line of it. Under `--pin-local` or
+        `--base={git-rev}` the commits are read as they are, not the text the
+        window shows for them.
+
         If no older commit changes the line, the view does not move.
 
 select_prev_change_here              *diffview-actions-select_prev_change_here*

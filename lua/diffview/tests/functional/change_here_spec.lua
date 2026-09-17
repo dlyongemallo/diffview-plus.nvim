@@ -125,16 +125,15 @@ describe("select_change_here", function()
     eq("body 5 rewritten", line_at(main_win()))
   end)
 
-  it("stays put when nothing older changes the line", function()
-    local main = open_on("body 12")
+  it("stops on the commit that introduced the line when nothing since changed it", function()
+    open_on("body 12")
 
     view:select_change_here(1)
-    vim.wait(3000, function()
-      return view.panel.cur_item[1] ~= view.panel.entries[1]
-    end)
 
-    eq(view.panel.entries[1], view.panel.cur_item[1])
-    eq("body 12", line_at(main))
+    -- c3 and c2 only shift `body 12`. c1 added the file, and against its
+    -- parent every line of it is new.
+    wait_for_entry(4, 20)
+    eq("body 12", line_at(main_win()))
   end)
 
   it("walks toward the newer commits", function()
@@ -157,18 +156,15 @@ describe("select_change_here", function()
 
   it("passes a commit that leaves the file alone", function()
     -- c3b touches `other.txt` only, so it cannot have changed `body 12` and the
-    -- walk must not come to rest on it. Nothing older changes the line either,
-    -- so the reader stays on c4.
-    local main = open_on("body 12", {}, 5)
+    -- walk must not come to rest on it. Nothing older changes the line until
+    -- c1, which added it.
+    open_on("body 12", {}, 5)
 
     view:select_change_here(1)
-    vim.wait(3000, function()
-      return view.panel.cur_item[1] ~= view.panel.entries[1]
-    end)
 
-    eq(view.panel.entries[1], view.panel.cur_item[1])
+    wait_for_entry(5, 20)
     eq("file.txt", view.panel.cur_item[2].path)
-    eq("body 12", line_at(main))
+    eq("body 12", line_at(main_win()))
   end)
 
   it("says the history is still loading rather than claiming nothing changes the line", function()
@@ -179,7 +175,9 @@ describe("select_change_here", function()
       message = msg
     end
     -- The panel appends entries as the log streams in; mid-load the end of the
-    -- list is the frontier, not the end of the history.
+    -- list is the frontier, not the end of the history. c1 has not arrived
+    -- yet, and it is the one commit older than c4 that changes the line.
+    table.remove(view.panel.entries)
     view.panel.updating = true
 
     view:select_change_here(1)
@@ -250,6 +248,55 @@ describe("select_change_here", function()
 
     wait_for_entry(2, 50)
     eq("body 5 rewritten", line_at(main_win()))
+  end)
+
+  it("gives up when the reader picks another entry while it reads", function()
+    -- Nothing older changes `body 12`, so a walk that runs to the end would
+    -- report that; giving up early reports nothing.
+    open_on("body 12")
+    local utils = require("diffview.utils")
+    local original_info, message = utils.info, nil
+    utils.info = function(msg)
+      message = msg
+    end
+
+    view:select_change_here(1)
+    -- The walk is waiting on its first read. The selection it started from
+    -- is gone by the time it resumes.
+    view:set_file(view.panel.entries[3].files[1])
+
+    wait_for_entry(3, 50)
+    vim.wait(2000, function()
+      return message ~= nil
+    end)
+    utils.info = original_info
+
+    eq(nil, message)
+    eq(view.panel.entries[3], view.panel.cur_item[1])
+  end)
+
+  it("waits for a swap still in flight before it reads the cursor", function()
+    -- `mid 3` exists only in c4. A swap to c1 drops the cursor onto its first
+    -- line, `body 1`, which no later commit changes. A walk that read the c4
+    -- text against the c1 selection would take `mid 3` for the line and stop
+    -- on c2, whose `head` block is new at that position.
+    open_on("mid 3")
+    local utils = require("diffview.utils")
+    local original_info, message = utils.info, nil
+    utils.info = function(msg)
+      message = msg
+    end
+
+    view:set_file(view.panel.entries[4].files[1])
+    view:select_change_here(-1)
+
+    vim.wait(5000, function()
+      return message ~= nil
+    end)
+    utils.info = original_info
+
+    eq("No further commit changes this line.", message)
+    eq(view.panel.entries[4], view.panel.cur_item[1])
   end)
 end)
 
@@ -785,5 +832,321 @@ describe("select_change_here across a copy", function()
     )
     vim.wait(200)
     eq("body 12 rewritten", line_at(main_win()))
+  end)
+end)
+
+-- The walk judges each commit against its own first parent, so the list order
+-- carries no meaning beyond "these are the commits". The histories here are
+-- the ones where the order lies: reversed, or listing both sides of a merge.
+-- And the modes where the main window does not show the commit at all.
+describe("select_change_here judges each commit by its own parent", function()
+  local repo, cwd, view, original_config
+
+  before_each(function()
+    original_config = vim.deepcopy(config.get_config())
+    config.get_config().use_icons = false
+    cwd = vim.fn.getcwd()
+  end)
+
+  after_each(function()
+    vim.cmd("cd " .. vim.fn.fnameescape(cwd))
+    helpers.close_view(view)
+    view = nil
+    helpers.cleanup_repo(repo)
+    config.setup(original_config)
+  end)
+
+  local function main_win()
+    return view.cur_layout:get_main_win().id
+  end
+
+  ---Open the history with `args` and wait for the entry it lands on.
+  ---@param args string[]
+  ---@param n_entries integer
+  ---@param lines integer # Line count of the buffer the view opens on.
+  local function open_with(args, n_entries, lines)
+    vim.cmd("cd " .. vim.fn.fnameescape(repo))
+    view = lib.file_history(nil, args)
+    assert.is_not_nil(view)
+    view:open()
+
+    assert.is_true(
+      vim.wait(10000, function()
+        return view.ready and #view.panel.entries >= n_entries and view.cur_layout ~= nil
+      end),
+      "view never became ready"
+    )
+    assert.is_true(
+      vim.wait(10000, function()
+        return api.nvim_buf_line_count(api.nvim_win_get_buf(main_win())) == lines
+      end),
+      "the b-side buffer never loaded"
+    )
+    vim.wait(200)
+  end
+
+  ---@param text string
+  local function cursor_on(text)
+    local main = main_win()
+    local lines = api.nvim_buf_get_lines(api.nvim_win_get_buf(main), 0, -1, false)
+    local row = vim.fn.index(lines, text) + 1
+    assert.is_true(row > 0, ("%q is not in the buffer"):format(text))
+
+    api.nvim_set_current_win(main)
+    api.nvim_win_set_cursor(main, { row, 0 })
+    eq(text, line_at(main))
+  end
+
+  ---@param idx integer
+  ---@param lines integer
+  local function wait_for_entry(idx, lines)
+    assert.is_true(
+      vim.wait(20000, function()
+        return view.panel.cur_item[1] == view.panel.entries[idx]
+          and api.nvim_buf_line_count(api.nvim_win_get_buf(main_win())) == lines
+      end),
+      ("the walk never came to rest on entry %d"):format(idx)
+    )
+    vim.wait(200)
+  end
+
+  ---Wait for the walk to end on the entry it started from, which is only
+  ---observable by its message.
+  ---@return string
+  local function walk_reports(dir)
+    local utils = require("diffview.utils")
+    local original_info, message = utils.info, nil
+    utils.info = function(msg)
+      message = msg
+    end
+
+    view:select_change_here(dir)
+
+    local got = vim.wait(10000, function()
+      return message ~= nil
+    end)
+    utils.info = original_info
+    assert.is_true(got, "the walk never reported anything")
+
+    return message
+  end
+
+  it("walks the reversed list in the right direction", function()
+    repo = make_repo()
+    -- Oldest first: c1, c2, c3, c4. An index step up is a step toward the
+    -- newer commits here.
+    open_with({ "--reverse", "file.txt" }, 4, 20)
+    eq(view.panel.entries[1], view.panel.cur_item[1])
+    cursor_on("body 5")
+
+    view:select_change_here(-1)
+
+    -- c2 only prepends; c3 rewrote the line.
+    wait_for_entry(3, 50)
+    eq("body 5 rewritten", line_at(main_win()))
+
+    -- c4 prepends again. Nothing newer changes the line, and the newest
+    -- entry is the end of the list that grows, so mid-load that is not yet
+    -- known.
+    view.panel.updating = true
+    assert.is_truthy(walk_reports(-1):match("still loading"))
+    view.panel.updating = false
+    eq(view.panel.entries[3], view.panel.cur_item[1])
+
+    view:set_file(view.panel.entries[4].files[1])
+    wait_for_entry(4, 55)
+    cursor_on("body 5 rewritten")
+
+    view:select_change_here(1)
+
+    wait_for_entry(3, 50)
+    eq("body 5 rewritten", line_at(main_win()))
+  end)
+
+  it("reads the commits rather than the pinned working tree", function()
+    repo = make_repo()
+    -- The main window shows the working tree for every entry, so the text
+    -- under the cursor never changes; the commits behind the entries do.
+    open_with({ "--pin-local", "file.txt" }, 4, 55)
+    cursor_on("body 5 rewritten")
+
+    view:select_change_here(1)
+
+    wait_for_entry(2, 55)
+    eq("body 5 rewritten", line_at(main_win()))
+
+    view:select_change_here(1)
+
+    -- c2 shifts the line. c1 added the file; under `--pin-local` an entry's
+    -- a-side is the commit itself, which is no parent to judge it by.
+    wait_for_entry(4, 55)
+    eq("body 5 rewritten", line_at(main_win()))
+  end)
+
+  it("reads the commits rather than the fixed base", function()
+    repo = make_repo()
+    open_with({ "--base=HEAD", "file.txt" }, 4, 55)
+    cursor_on("body 5 rewritten")
+
+    view:select_change_here(1)
+
+    wait_for_entry(2, 55)
+    eq("body 5 rewritten", line_at(main_win()))
+  end)
+
+  -- A side branch rewrites the line while the mainline shifts it, and the
+  -- merge brings the rewrite over. Listed newest-first that is
+  --
+  --   1  M   merge of s1 into m2      head 1..10 + body, body 5 rewritten  (30)
+  --   2  m2  mainline: head 1..10 + body                                   (30)
+  --   3  s1  side: body 5 rewritten                                        (20)
+  --   4  m1  body 1..20                                                    (20)
+  --
+  -- m2 sits next to M in the list and differs from it on the line, but it is
+  -- s1's rewrite that M carries, not m2's. m2 changed nothing on the line
+  -- against its own parent.
+  local function make_merge_repo()
+    local r = helpers.init_repo()
+    local vcs = "git"
+    local function commit_at(msg, second)
+      helpers.run({ vcs, "add", "-A" }, r)
+      local date = ("2020-01-01T00:00:%02d+0000"):format(second)
+      helpers.run(
+        { vcs, "-c", "commit.gpgsign=false", "commit", "-q", "-m", msg },
+        r,
+        { env = { GIT_AUTHOR_DATE = date, GIT_COMMITTER_DATE = date } }
+      )
+    end
+
+    local lines = body("body", 20)
+    write(r, "file.txt", lines)
+    commit_at("m1", 0)
+
+    helpers.run({ vcs, "checkout", "-q", "-b", "side" }, r)
+    lines[5] = "body 5 rewritten"
+    write(r, "file.txt", lines)
+    commit_at("s1", 1)
+
+    helpers.run({ vcs, "checkout", "-q", "-" }, r)
+    lines = vim.list_extend(body("head", 10), body("body", 20))
+    write(r, "file.txt", lines)
+    commit_at("m2", 2)
+
+    local date = "2020-01-01T00:00:03+0000"
+    helpers.run(
+      { vcs, "-c", "commit.gpgsign=false", "merge", "-q", "--no-edit", "--no-ff", "side" },
+      r,
+      { env = { GIT_AUTHOR_DATE = date, GIT_COMMITTER_DATE = date } }
+    )
+
+    return r
+  end
+
+  it("passes a mainline commit next to the merge and stops on the side commit", function()
+    repo = make_merge_repo()
+    open_with({ "file.txt" }, 4, 30)
+    eq("m2", view.panel.entries[2].commit.subject)
+    cursor_on("body 5 rewritten")
+
+    view:select_change_here(1)
+
+    wait_for_entry(3, 20)
+    eq("s1", view.panel.cur_item[1].commit.subject)
+    eq("body 5 rewritten", line_at(main_win()))
+  end)
+
+  it("stops on the merge that brought the side commit's change over", function()
+    repo = make_merge_repo()
+    open_with({ "file.txt" }, 4, 30)
+
+    view:set_file(view.panel.entries[3].files[1])
+    wait_for_entry(3, 20)
+    cursor_on("body 5 rewritten")
+
+    view:select_change_here(-1)
+
+    -- m2 comes first and holds the original line, so the walk must look past
+    -- it: against its own parent it changed nothing there. M's diff against
+    -- its first parent m2 is where the rewrite arrives.
+    wait_for_entry(1, 30)
+    eq("body 5 rewritten", line_at(main_win()))
+  end)
+end)
+
+-- The file turns binary for one commit. c2 keeps the text of c1 and appends a
+-- NUL byte to its last line, so a walk that fails to notice the blob reads it
+-- as leaving `body 5` alone and passes it.
+--
+--   c1  file.txt   body 1..20
+--   c2  file.txt   the same, with a NUL byte on the last line
+--   c3  file.txt   body 1..20
+local function make_binary_repo()
+  local repo = helpers.init_repo()
+  local lines = body("body", 20)
+  write(repo, "file.txt", lines)
+  commit(repo, "c1")
+
+  local f = assert(io.open(repo .. "/file.txt", "wb"))
+  f:write(table.concat(lines, "\n") .. "\0\n")
+  f:close()
+  commit(repo, "c2")
+
+  write(repo, "file.txt", lines)
+  commit(repo, "c3")
+
+  return repo
+end
+
+describe("select_change_here across a binary revision", function()
+  local repo, cwd, view, original_config
+
+  before_each(function()
+    original_config = vim.deepcopy(config.get_config())
+    config.get_config().use_icons = false
+    repo = make_binary_repo()
+    cwd = vim.fn.getcwd()
+    vim.cmd("cd " .. vim.fn.fnameescape(repo))
+  end)
+
+  after_each(function()
+    vim.cmd("cd " .. vim.fn.fnameescape(cwd))
+    helpers.close_view(view)
+    view = nil
+    helpers.cleanup_repo(repo)
+    config.setup(original_config)
+  end)
+
+  it("opens the binary revision rather than judging it", function()
+    view = lib.file_history(nil, { "file.txt" })
+    assert.is_not_nil(view)
+    view:open()
+
+    assert.is_true(
+      vim.wait(10000, function()
+        return view.ready and #view.panel.entries >= 3 and view.cur_layout ~= nil
+      end),
+      "view never became ready"
+    )
+    local main = view.cur_layout:get_main_win().id
+    assert.is_true(
+      vim.wait(10000, function()
+        return api.nvim_buf_line_count(api.nvim_win_get_buf(main)) >= 20
+      end),
+      "the b-side buffer never loaded"
+    )
+    api.nvim_set_current_win(main)
+    api.nvim_win_set_cursor(main, { 5, 0 })
+    eq("body 5", line_at(main))
+
+    view:select_change_here(1)
+
+    assert.is_true(
+      vim.wait(20000, function()
+        return view.panel.cur_item[1] == view.panel.entries[2]
+      end),
+      "the walk never came to rest on the binary revision"
+    )
+    vim.wait(200)
+    eq(view.panel.entries[2], view.panel.cur_item[1])
   end)
 end)

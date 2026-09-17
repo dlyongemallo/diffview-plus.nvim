@@ -8,6 +8,7 @@ local M = {}
 
 ---@class Commit : diffview.Object
 ---@field hash string
+---@field parent_hash? string # First parent. The synthetic working-tree commit has none.
 ---@field author string
 ---@field time number
 ---@field time_offset number
@@ -22,6 +23,7 @@ local Commit = oop.create_class("Commit")
 
 function Commit:init(opt)
   self.hash = opt.hash
+  self.parent_hash = opt.parent_hash
   self.author = opt.author
   self.time = opt.time
   self.rel_date = opt.rel_date
