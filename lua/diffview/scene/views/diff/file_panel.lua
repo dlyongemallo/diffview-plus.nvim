@@ -112,6 +112,11 @@ function FilePanel:update_components()
     return
   end
 
+  self.render_data:destroy()
+  if self.components then
+    renderer.destroy_comp_struct(self.components)
+  end
+
   local conflicting_files
   local working_files
   local staged_files

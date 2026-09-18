@@ -791,6 +791,7 @@ describe("diffview.ui.panel", function()
       -- Capture the schema passed to render_data:create_component.
       local comp_schema
       panel.render_data = {
+        destroy = function() end,
         create_component = function(_, schema)
           comp_schema = schema
           return {
@@ -865,6 +866,7 @@ describe("diffview.ui.panel", function()
       panel.listing_style = "tree"
       panel.tree_options = { flatten_dirs = true }
       panel.render_data = {
+        destroy = function() end,
         create_component = function()
           return {
             conflicting = { files = { comp = {} } },
