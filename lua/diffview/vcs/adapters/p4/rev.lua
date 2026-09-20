@@ -17,7 +17,9 @@ P4Rev.NULL_TREE_SHA = "#none" -- Or perhaps @0 is better? Let's stick with #none
 function P4Rev:init(rev_type, revision, track_head)
   -- Convert changelist numbers to @CL string format before delegating to the
   -- base class, which would otherwise interpret numbers as stage indices.
-  if type(revision) == "number" then
+  -- A bare number in a string is a changelist too: `P4Commit.hash` is one,
+  -- and `get_show_args` appends the name to the path as it is.
+  if type(revision) == "number" or (type(revision) == "string" and revision:match("^%d+$")) then
     revision = "@" .. tostring(revision)
   end
 

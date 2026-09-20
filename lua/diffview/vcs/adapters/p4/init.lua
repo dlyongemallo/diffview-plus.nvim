@@ -528,6 +528,9 @@ P4Adapter.file_history_worker = async.void(function(self, out_stream, opt)
       logger:fmt_warn("Could not parse commit data for CL %s", cl)
       goto continue -- Skip if parsing failed
     end
+    -- The a-side below diffs against the changelist before this one, so
+    -- that is the parent a commit is judged against.
+    commit_data.parent_hash = tostring(tonumber(cl) - 1)
 
     local parsed_describe = parse_describe_output(describe_job.stdout) -- Re-use helper if needed
     local files_in_cl = parsed_describe.files or {}

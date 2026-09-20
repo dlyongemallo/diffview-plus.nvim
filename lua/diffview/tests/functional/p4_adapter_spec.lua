@@ -119,6 +119,11 @@ describe("diffview.vcs.adapters.p4", function()
       assert.equals("@42", rev:object_name())
     end)
 
+    it("converts a changelist number in a string to @CL format", function()
+      local rev = P4Rev(RevType.COMMIT, "42")
+      assert.equals("@42", rev:object_name())
+    end)
+
     it("object_name returns @ for LOCAL revs", function()
       local rev = P4Rev(RevType.LOCAL)
       assert.equals("@", rev:object_name())
