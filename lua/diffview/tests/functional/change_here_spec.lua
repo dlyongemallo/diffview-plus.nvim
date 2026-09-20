@@ -1150,3 +1150,131 @@ describe("select_change_here across a binary revision", function()
     eq(view.panel.entries[2], view.panel.cur_item[1])
   end)
 end)
+
+describe("select_change_here on what the log was asked for", function()
+  local repo, cwd, view, original_config
+
+  before_each(function()
+    original_config = vim.deepcopy(config.get_config())
+    config.get_config().use_icons = false
+    repo = make_repo()
+    cwd = vim.fn.getcwd()
+    vim.cmd("cd " .. vim.fn.fnameescape(repo))
+  end)
+
+  after_each(function()
+    vim.cmd("cd " .. vim.fn.fnameescape(cwd))
+    helpers.close_view(view)
+    view = nil
+    helpers.cleanup_repo(repo)
+    config.setup(original_config)
+  end)
+
+  local function main_win()
+    return view.cur_layout:get_main_win().id
+  end
+
+  ---@param args string[]
+  ---@param n_entries integer
+  ---@param lines integer
+  local function open_with(args, n_entries, lines)
+    view = lib.file_history(nil, args)
+    assert.is_not_nil(view)
+    view:open()
+
+    assert.is_true(
+      vim.wait(10000, function()
+        return view.ready and #view.panel.entries >= n_entries and view.cur_layout ~= nil
+      end),
+      "view never became ready"
+    )
+    assert.is_true(
+      vim.wait(10000, function()
+        return api.nvim_buf_line_count(api.nvim_win_get_buf(main_win())) == lines
+      end),
+      "the b-side buffer never loaded"
+    )
+    vim.wait(200)
+  end
+
+  ---@param text string
+  local function cursor_on(text)
+    local main = main_win()
+    local lines = api.nvim_buf_get_lines(api.nvim_win_get_buf(main), 0, -1, false)
+    local row = vim.fn.index(lines, text) + 1
+    assert.is_true(row > 0, ("%q is not in the buffer"):format(text))
+
+    api.nvim_set_current_win(main)
+    api.nvim_win_set_cursor(main, { row, 0 })
+    eq(text, line_at(main))
+  end
+
+  ---@param idx integer
+  ---@param lines integer
+  local function wait_for_entry(idx, lines)
+    assert.is_true(
+      vim.wait(20000, function()
+        return view.panel.cur_item[1] == view.panel.entries[idx]
+          and api.nvim_buf_line_count(api.nvim_win_get_buf(main_win())) == lines
+      end),
+      ("the walk never came to rest on entry %d"):format(idx)
+    )
+    vim.wait(200)
+  end
+
+  ---@return string
+  local function walk_reports(dir)
+    local utils = require("diffview.utils")
+    local original_info, message = utils.info, nil
+    utils.info = function(msg)
+      message = msg
+    end
+
+    view:select_change_here(dir)
+
+    local got = vim.wait(10000, function()
+      return message ~= nil
+    end)
+    utils.info = original_info
+    assert.is_true(got, "the walk never reported anything")
+
+    return message
+  end
+
+  it("refuses to read the cursor from the a-side window", function()
+    open_with({ "file.txt" }, 4, 55)
+    cursor_on("body 5 rewritten")
+    -- The a-side shows c3, where the line reads the same, so a walk that
+    -- read it from there would find c1 and move.
+    api.nvim_set_current_win(view.cur_layout.a.id)
+
+    eq("The line is read from the right-hand window. Move the cursor there first.", walk_reports(1))
+    eq(view.panel.entries[1], view.panel.cur_item[1])
+  end)
+
+  it("says the range ran out rather than the history when the log was limited", function()
+    open_with({ "--max-count=2", "file.txt" }, 2, 55)
+    cursor_on("body 5 rewritten")
+
+    view:select_change_here(1)
+
+    wait_for_entry(2, 50)
+    eq("body 5 rewritten", line_at(main_win()))
+    -- c1 added the line, but the log stops at c3.
+    eq("No further commit in the selected range changes this line.", walk_reports(1))
+    -- Toward the newer commits the list is whole: c4 only shifts the line.
+    eq("No further commit changes this line.", walk_reports(-1))
+  end)
+
+  it("walks the list git's own -L filtered down to", function()
+    -- `body 5 rewritten` is line 40 of c4. c4 and c2 only shift it, so git
+    -- lists c3 and c1, and the view opens on c3.
+    open_with({ "-L40,40:file.txt" }, 2, 50)
+    cursor_on("body 5 rewritten")
+
+    view:select_change_here(1)
+
+    wait_for_entry(2, 20)
+    eq("body 5", line_at(main_win()))
+  end)
+end)

@@ -324,6 +324,19 @@ FileHistoryView.select_change_here = async.void(function(self, dir)
     return
   end
 
+  -- The line comes from the main window. A cursor in another window of the
+  -- layout is on the other side of the diff, where the line may not exist in
+  -- the main window's text at all, so the walk refuses rather than guessing.
+  local cur_win = api.nvim_get_current_win()
+  if cur_win ~= win.id then
+    for _, layout_win in ipairs(self.cur_layout.windows) do
+      if layout_win.id == cur_win then
+        utils.info("The line is read from the right-hand window. Move the cursor there first.")
+        return
+      end
+    end
+  end
+
   local lnum = api.nvim_win_get_cursor(win.id)[1]
   local lines = api.nvim_buf_get_lines(api.nvim_win_get_buf(win.id), 0, -1, false)
   local found
@@ -440,8 +453,14 @@ FileHistoryView.select_change_here = async.void(function(self, dir)
   -- Nothing ahead changes this line, so the reader stays where they are rather
   -- than being dropped at the far end of the history.
   if not found then
+    -- A revision range cuts the list at both ends, a count at the older one.
+    -- Running off a cut end says nothing about the commits beyond it.
+    local limited = log_opt.rev_range
+      or log_opt.revisions
+      or (dir > 0 and (log_opt.max_count or log_opt.limit))
     utils.info(
       still_loading and "The history is still loading. Nothing read so far changes this line."
+        or limited and "No further commit in the selected range changes this line."
         or "No further commit changes this line."
     )
     return

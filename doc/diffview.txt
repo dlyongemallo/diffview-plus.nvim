@@ -2085,7 +2085,21 @@ select_next_change_here              *diffview-actions-select_next_change_here*
         `--base={git-rev}` the commits are read as they are, not the text the
         window shows for them.
 
-        If no older commit changes the line, the view does not move.
+        "Changed" means rewritten in place. A block cut here and pasted
+        elsewhere counts as deleted here, so the walk stops on the commit
+        that moved it rather than following the code to its old place, as
+        `git blame -M` would.
+
+        The line is read from the right-hand window. With the cursor in
+        another window of the diff, the action does nothing but say so.
+
+        If no older commit changes the line, the view does not move. In a
+        history opened with a revision range or a commit limit, that only
+        speaks for the commits listed.
+
+        Git's `-L` (see |:DiffviewFileHistory|) is the same question
+        asked of git itself: the history then lists only the commits that
+        touched the given range, and the walk steps through that list.
 
 select_prev_change_here              *diffview-actions-select_prev_change_here*
         Contexts: `file_history_view`, `file_history_panel`
