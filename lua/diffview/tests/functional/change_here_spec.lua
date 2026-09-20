@@ -1073,6 +1073,119 @@ describe("select_change_here judges each commit by its own parent", function()
   end)
 end)
 
+-- d2 deletes one line and nothing else. d3 prepends, which moves every line
+-- below without changing one:
+--
+--   d1   body 1..10                 (10 lines)
+--   d2   body 5 deleted             (9)
+--   d3   head 1..3 + body           (12)
+local function make_deletion_repo()
+  local repo = helpers.init_repo()
+  local lines = body("body", 10)
+  write(repo, "file.txt", lines)
+  commit(repo, "d1")
+
+  table.remove(lines, 5)
+  write(repo, "file.txt", lines)
+  commit(repo, "d2")
+
+  lines = vim.list_extend(body("head", 3), lines)
+  write(repo, "file.txt", lines)
+  commit(repo, "d3")
+
+  return repo
+end
+
+describe("select_change_here across a pure deletion", function()
+  local repo, cwd, view, original_config
+
+  before_each(function()
+    original_config = vim.deepcopy(config.get_config())
+    config.get_config().use_icons = false
+    repo = make_deletion_repo()
+    cwd = vim.fn.getcwd()
+    vim.cmd("cd " .. vim.fn.fnameescape(repo))
+  end)
+
+  after_each(function()
+    vim.cmd("cd " .. vim.fn.fnameescape(cwd))
+    helpers.close_view(view)
+    view = nil
+    helpers.cleanup_repo(repo)
+    config.setup(original_config)
+  end)
+
+  local function main_win()
+    return view.cur_layout:get_main_win().id
+  end
+
+  ---Open the history on entry `idx` and put the cursor on `text`.
+  ---@param idx integer
+  ---@param text string
+  local function open_on(idx, text)
+    view = lib.file_history(nil, { "file.txt" })
+    assert.is_not_nil(view)
+    view:open()
+
+    assert.is_true(
+      vim.wait(10000, function()
+        return view.ready and #view.panel.entries >= 3 and view.cur_layout ~= nil
+      end),
+      "view never became ready"
+    )
+    view:set_file(view.panel.entries[idx].files[1])
+    assert.is_true(
+      vim.wait(10000, function()
+        local buf = api.nvim_win_get_buf(main_win())
+        return view.panel.cur_item[1] == view.panel.entries[idx]
+          and vim.fn.index(api.nvim_buf_get_lines(buf, 0, -1, false), text) >= 0
+      end),
+      "the b-side buffer never loaded"
+    )
+    vim.wait(200)
+
+    local main = main_win()
+    local lines = api.nvim_buf_get_lines(api.nvim_win_get_buf(main), 0, -1, false)
+    api.nvim_set_current_win(main)
+    api.nvim_win_set_cursor(main, { vim.fn.index(lines, text) + 1, 0 })
+    eq(text, line_at(main))
+  end
+
+  ---@param idx integer
+  ---@param lines integer
+  local function wait_for_entry(idx, lines)
+    assert.is_true(
+      vim.wait(20000, function()
+        return view.panel.cur_item[1] == view.panel.entries[idx]
+          and api.nvim_buf_line_count(api.nvim_win_get_buf(main_win())) == lines
+      end),
+      ("the walk never came to rest on entry %d"):format(idx)
+    )
+    vim.wait(200)
+  end
+
+  it("stops on the commit that deleted the line walking toward the newer commits", function()
+    open_on(3, "body 5")
+
+    view:select_change_here(-1)
+
+    -- The line is gone in d2, so the cursor lands on the last line before it.
+    wait_for_entry(2, 9)
+    eq("body 4", line_at(main_win()))
+  end)
+
+  it("passes the deletion walking toward the older commits from the line after it", function()
+    open_on(1, "body 6")
+
+    view:select_change_here(1)
+
+    -- d3 shifts `body 6`, d2 deleted the line above it and left it alone, and
+    -- d1 added it.
+    wait_for_entry(3, 10)
+    eq("body 6", line_at(main_win()))
+  end)
+end)
+
 -- The file turns binary for one commit. c2 keeps the text of c1 and appends a
 -- NUL byte to its last line, so a walk that fails to notice the blob reads it
 -- as leaving `body 5` alone and passes it.

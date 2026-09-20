@@ -387,19 +387,15 @@ FileHistoryView.select_change_here = async.void(function(self, dir)
         break
       end
 
-      -- The cursor follows the code from one read text into the next, so a
-      -- skip over several commits still lands on the line it started from.
-      lnum = line_map.between(lines, next_lines, lnum)
-      lines = next_lines
-
       -- The parent's text, under the name the file had there. A parent that
       -- has no such text is one the commit added the file to, and every line
       -- is new against it; so is a root commit, which has no parent at all.
       -- The synthetic working-tree entry has no hash; its parent is HEAD,
       -- which its `revs.a` holds. That field is not the parent for any other
-      -- entry: under `--pin-local` it is the commit itself. In `--pin-local`
-      -- a rename carries no `oldpath`, so the walk stops on it as if the file
-      -- were new.
+      -- entry: under `--pin-local` it is the commit itself. A rename that
+      -- carries no `oldpath`, as under `--pin-local` or from an adapter whose
+      -- history does not report the source (jj, today), stops the walk as if
+      -- the file were new, which is also the diff the view shows for it.
       local parent_rev
       if not entry.commit.hash then
         parent_rev = candidate.revs.a
@@ -415,7 +411,27 @@ FileHistoryView.select_change_here = async.void(function(self, dir)
         return
       end
 
-      local _, touched = line_map.between(lines, parent_lines, lnum)
+      -- The cursor follows the code from one read text into the next, so a
+      -- skip over several commits still lands on the line it started from.
+      --
+      -- The line is judged on the side of the commit's diff that the text it
+      -- was read from lies on. Walking older, that is the commit's own text:
+      -- a line the commit added is inside a hunk there. Walking newer, it is
+      -- the parent's: a line the commit deleted is inside a hunk there, while
+      -- in the commit's text it has already collapsed onto a survivor that no
+      -- hunk covers. Either way the line ends up in the commit's text.
+      local touched
+      if #parent_lines == 0 then
+        lnum = line_map.between(lines, next_lines, lnum)
+        touched = true
+      elseif dir > 0 then
+        lnum = line_map.between(lines, next_lines, lnum)
+        touched = select(2, line_map.between(next_lines, parent_lines, lnum))
+      else
+        local parent_lnum = line_map.between(lines, parent_lines, lnum)
+        lnum, touched = line_map.between(parent_lines, next_lines, parent_lnum)
+      end
+      lines = next_lines
 
       -- A rename lists the file under both names, and the entries beyond it in
       -- this direction use only one of them: the older ones the old name, the
