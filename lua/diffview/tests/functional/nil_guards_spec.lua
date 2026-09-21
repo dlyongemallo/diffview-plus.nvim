@@ -569,7 +569,7 @@ describe("nil guards", function()
   end)
 
   -- Same class of bug as #74 (FilePanel), but in FileHistoryPanel.
-  -- update_components() called render_data:destroy() without a nil guard.
+  -- update_components() called render_data:reset() without a nil guard.
   describe("FileHistoryPanel update_components nil render_data", function()
     local FileHistoryPanel =
       require("diffview.scene.views.file_history.file_history_panel").FileHistoryPanel

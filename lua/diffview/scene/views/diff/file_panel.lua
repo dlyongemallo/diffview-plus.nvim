@@ -112,7 +112,7 @@ function FilePanel:update_components()
     return
   end
 
-  self.render_data:destroy()
+  self.render_data:reset()
   if self.components then
     renderer.destroy_comp_struct(self.components)
     self.components = nil

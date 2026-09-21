@@ -138,7 +138,7 @@ FileHistoryPanel.destroy = async.sync_void(function(self)
   self.cur_item = nil
   self.option_panel:destroy()
   self.option_panel = nil
-  self.render_data:destroy()
+  self.render_data:reset()
 
   if self.components then
     renderer.destroy_comp_struct(self.components)
@@ -164,7 +164,7 @@ function FileHistoryPanel:update_components()
     return
   end
 
-  self.render_data:destroy()
+  self.render_data:reset()
   if self.components then
     renderer.destroy_comp_struct(self.components)
   end

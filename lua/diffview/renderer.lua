@@ -351,7 +351,11 @@ function RenderData:clear()
   end
 end
 
-function RenderData:destroy()
+---Detach and destroy every attached component, and clear the buffered
+---`lines`/`hl` state. Unlike `RenderComponent:destroy`, the `RenderData`
+---instance itself stays live and reusable: `namespace` is preserved and
+---the next `create_component` + `clear` cycle repopulates it.
+function RenderData:reset()
   self.lines = nil
   self.hl = nil
   for _, c in ipairs(self.components) do
