@@ -1021,6 +1021,22 @@ view.foldlevel                                  *diffview-config-view.foldlevel*
         value (e.g. `99`) to keep all folds open, which can help when another
         plugin's ftplugin creates unrelated folds in diff buffers.
 
+view.winfixbuf                                  *diffview-config-view.winfixbuf*
+        Type: `boolean`, Default: `false`
+
+        Set 'winfixbuf' on diff windows so that any external attempt to
+        swap the buffer -- LSP jumps (`gd`, `<C-]>`), `gf`, quickfix
+        selection, a plugin's `:edit`, and so on -- fails loudly with
+        `E1513` instead of silently replacing the diff buffer and
+        stranding the layout.
+
+        Diffview's own file cycling, layout rebuilds, and null-fallback
+        paths bypass the guard, so switching files with the panel or
+        `<tab>`/`<s-tab>` keeps working normally.
+
+        Off by default. When enabled it also applies to the null
+        placeholder window shown for files whose buffer failed to load.
+
                                                 *diffview-config-view.one_sided_layout*
 view.one_sided_layout
         Type: `"default"|"raw"`, Default: `"default"`

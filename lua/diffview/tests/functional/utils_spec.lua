@@ -164,6 +164,85 @@ describe("diffview.utils.set_win_buf", function()
       error(err)
     end
   end)
+
+  it("bypasses winfixbuf and restores it after a successful swap", function()
+    local win = vim.api.nvim_get_current_win()
+    local buf_a = vim.api.nvim_create_buf(false, true)
+    local buf_b = vim.api.nvim_create_buf(false, true)
+
+    vim.api.nvim_win_set_buf(win, buf_a)
+    vim.wo[win].winfixbuf = true
+
+    local success, msg, recovered = utils.set_win_buf(win, buf_b)
+
+    eq(true, success)
+    eq(nil, msg)
+    eq(false, recovered)
+    eq(buf_b, vim.api.nvim_win_get_buf(win))
+    eq(true, vim.wo[win].winfixbuf)
+
+    vim.wo[win].winfixbuf = false
+    vim.api.nvim_buf_delete(buf_a, { force = true })
+    vim.api.nvim_buf_delete(buf_b, { force = true })
+  end)
+
+  it("leaves winfixbuf unchanged on a window that did not have it set", function()
+    local win = vim.api.nvim_get_current_win()
+    local buf_a = vim.api.nvim_create_buf(false, true)
+    local buf_b = vim.api.nvim_create_buf(false, true)
+
+    vim.api.nvim_win_set_buf(win, buf_a)
+    vim.wo[win].winfixbuf = false
+
+    local success = utils.set_win_buf(win, buf_b)
+
+    eq(true, success)
+    eq(false, vim.wo[win].winfixbuf)
+
+    vim.api.nvim_buf_delete(buf_a, { force = true })
+    vim.api.nvim_buf_delete(buf_b, { force = true })
+  end)
+
+  it("restores winfixbuf after the retry path", function()
+    local win = vim.api.nvim_get_current_win()
+    local buf_a = vim.api.nvim_create_buf(false, true)
+    local buf_b = vim.api.nvim_create_buf(false, true)
+
+    vim.api.nvim_win_set_buf(win, buf_a)
+    vim.wo[win].winfixbuf = true
+
+    local original_set_win_buf = vim.api.nvim_win_set_buf
+    local calls = 0
+
+    local ok, err = pcall(function()
+      vim.api.nvim_win_set_buf = function(w, b)
+        calls = calls + 1
+        if calls == 1 then
+          error(
+            'BufEnter Autocommands for "*": Vim:E903: Process failed to start: too many open files'
+          )
+        end
+        return original_set_win_buf(w, b)
+      end
+
+      local success, msg, recovered = utils.set_win_buf(win, buf_b)
+
+      eq(true, success)
+      eq(true, recovered)
+      eq(2, calls)
+      eq(buf_b, vim.api.nvim_win_get_buf(win))
+      eq(true, vim.wo[win].winfixbuf)
+    end)
+
+    vim.api.nvim_win_set_buf = original_set_win_buf
+    vim.wo[win].winfixbuf = false
+    vim.api.nvim_buf_delete(buf_a, { force = true })
+    vim.api.nvim_buf_delete(buf_b, { force = true })
+
+    if not ok then
+      error(err)
+    end
+  end)
 end)
 
 describe("diffview.utils.str_pad", function()

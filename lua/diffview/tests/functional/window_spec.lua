@@ -405,6 +405,104 @@ describe("diffview.scene.window", function()
         vim.api.nvim_buf_delete(bufnr, { force = true })
       end)
     )
+
+    -- `view.winfixbuf` opts users into `winfixbuf` on diff windows, so that
+    -- an external `nvim_win_set_buf` (LSP jumps, `gf`, quickfix, ...) fails
+    -- loudly with `E1513` instead of silently displacing the diff buffer.
+    -- Diffview's own file cycling and layout rebuilds bypass the guard via
+    -- `utils.set_win_buf`.
+    it(
+      "sets `winfixbuf` on the window when `view.winfixbuf` is enabled",
+      helpers.async_test(function()
+        config.setup({ view = { winfixbuf = true } })
+
+        local adapter = mock_adapter()
+        local bufnr = vim.api.nvim_create_buf(false, true)
+        local win, file = make_window(adapter)
+        file.bufnr = bufnr
+        file.loaded = true
+        win.parent = stub_parent()
+
+        async.await(win:open_file())
+
+        assert.is_true(vim.wo[win.id].winfixbuf)
+
+        vim.wo[win.id].winfixbuf = false
+        if vim.api.nvim_win_is_valid(test_winid) then
+          vim.api.nvim_win_close(test_winid, true)
+        end
+        test_winid = nil
+        Window.winopt_store[bufnr] = nil
+        vim.api.nvim_buf_delete(bufnr, { force = true })
+      end)
+    )
+
+    it(
+      "leaves `winfixbuf` off when `view.winfixbuf` is disabled (default)",
+      helpers.async_test(function()
+        config.setup({ view = { winfixbuf = false } })
+
+        local adapter = mock_adapter()
+        local bufnr = vim.api.nvim_create_buf(false, true)
+        local win, file = make_window(adapter)
+        file.bufnr = bufnr
+        file.loaded = true
+        win.parent = stub_parent()
+
+        async.await(win:open_file())
+
+        assert.is_false(vim.wo[win.id].winfixbuf)
+
+        if vim.api.nvim_win_is_valid(test_winid) then
+          vim.api.nvim_win_close(test_winid, true)
+        end
+        test_winid = nil
+        Window.winopt_store[bufnr] = nil
+        vim.api.nvim_buf_delete(bufnr, { force = true })
+      end)
+    )
+
+    it(
+      "blocks external buffer swaps with E1513 but internal `set_win_buf` still works",
+      helpers.async_test(function()
+        config.setup({ view = { winfixbuf = true } })
+
+        local adapter = mock_adapter()
+        local bufnr = vim.api.nvim_create_buf(false, true)
+        local win, file = make_window(adapter)
+        file.bufnr = bufnr
+        file.loaded = true
+        win.parent = stub_parent()
+
+        async.await(win:open_file())
+
+        -- External swap (LSP jump / `gf` / quickfix all end up here) trips E1513.
+        local intruder = vim.api.nvim_create_buf(false, true)
+        local ok, err = pcall(vim.api.nvim_win_set_buf, win.id, intruder)
+        assert.is_false(ok)
+        assert.is_truthy(tostring(err):find("E1513"))
+        assert.equals(bufnr, vim.api.nvim_win_get_buf(win.id))
+
+        -- Internal swap (file cycling / layout rebuild) goes through
+        -- `utils.set_win_buf` and is allowed. `winfixbuf` is restored after.
+        local utils = require("diffview.utils")
+        local next_buf = vim.api.nvim_create_buf(false, true)
+        local success = utils.set_win_buf(win.id, next_buf)
+        assert.is_true(success)
+        assert.equals(next_buf, vim.api.nvim_win_get_buf(win.id))
+        assert.is_true(vim.wo[win.id].winfixbuf)
+
+        vim.wo[win.id].winfixbuf = false
+        if vim.api.nvim_win_is_valid(test_winid) then
+          vim.api.nvim_win_close(test_winid, true)
+        end
+        test_winid = nil
+        Window.winopt_store[bufnr] = nil
+        vim.api.nvim_buf_delete(bufnr, { force = true })
+        vim.api.nvim_buf_delete(intruder, { force = true })
+        vim.api.nvim_buf_delete(next_buf, { force = true })
+      end)
+    )
   end)
 
   it(

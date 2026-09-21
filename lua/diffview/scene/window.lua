@@ -129,6 +129,7 @@ function Window:open_fallback()
 
   File.load_null_buffer(self.id)
   self:apply_null_winopts()
+  vim.wo[self.id].winfixbuf = config.get_config().view.winfixbuf
 
   if self:show_winbar_info() then
     vim.wo[self.id].winbar = self.file.winbar
@@ -239,6 +240,12 @@ Window.open_file = async.void(function(self)
   else
     self:apply_file_winopts({ skip_fold = solo_content_side })
   end
+
+  -- `winfixbuf` is a policy on the diff window, not part of the buffer's
+  -- restored winopts, so apply it after `apply_*_winopts` and let the
+  -- window's teardown carry it off. Internal buffer swaps go through
+  -- `utils.set_win_buf`, which bypasses this guard.
+  vim.wo[self.id].winfixbuf = conf.view.winfixbuf
 
   local view = lib.get_current_view()
   local disable_diagnostics = false

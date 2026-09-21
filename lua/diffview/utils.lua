@@ -83,20 +83,40 @@ end
 ---Set a window buffer while gracefully handling external autocommand failures.
 ---On failure, retry once while window and buffer enter/leave events are
 ---ignored.
+---
+---When `winfixbuf` is set on the target window (see `view.winfixbuf`), it is
+---temporarily cleared for the duration of the swap so Diffview's own file
+---cycling and layout rebuilds can proceed; external callers of
+---`nvim_win_set_buf` (LSP jumps, `gf`, quickfix) still hit `E1513`, which
+---is the point of the option.
 ---@param winid integer
 ---@param bufnr integer
 ---@return boolean success
 ---@return string? err Error string on failure. When `success == true` and `recovered == true`, this contains the first failure message.
 ---@return boolean recovered
 function M.set_win_buf(winid, bufnr)
+  local had_fixbuf = api.nvim_win_is_valid(winid) and vim.wo[winid].winfixbuf
+  if had_fixbuf then
+    vim.wo[winid].winfixbuf = false
+  end
+
+  local function restore_fixbuf()
+    if had_fixbuf and api.nvim_win_is_valid(winid) then
+      vim.wo[winid].winfixbuf = true
+    end
+  end
+
   local ok, err = pcall(api.nvim_win_set_buf, winid, bufnr)
   if ok then
+    restore_fixbuf()
     return true, nil, false
   end
 
   local retry_ok, retry_err = M.no_win_event_call(function()
     api.nvim_win_set_buf(winid, bufnr)
   end)
+
+  restore_fixbuf()
 
   if retry_ok then
     return true, tostring(err), true

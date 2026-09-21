@@ -317,6 +317,7 @@ M.defaults = {
   ---@field merge_tool DiffviewMergeViewTypeConfig
   ---@field file_history DiffviewStandardViewTypeConfig
   ---@field foldlevel integer
+  ---@field winfixbuf boolean
   ---@field one_sided_layout DiffviewOneSidedLayout
   ---@field cycle_layouts DiffviewCycleLayouts
   ---@field inline DiffviewInlineConfig
@@ -326,6 +327,7 @@ M.defaults = {
   ---@field merge_tool? DiffviewMergeViewTypeConfig.user Config for conflicted files in diff views during a merge or rebase.
   ---@field file_history? DiffviewStandardViewTypeConfig.user Config for changed files in file history views.
   ---@field foldlevel? integer See `|diffview-config-view.foldlevel|`.
+  ---@field winfixbuf? boolean Set 'winfixbuf' on diff windows so accidental buffer swaps (LSP jumps, `gf`, quickfix, etc.) fail loudly with `E1513` instead of silently breaking the layout. Internal buffer changes (file cycling, layout rebuilds) bypass the guard. See `|diffview-config-view.winfixbuf|`.
   ---@field one_sided_layout? DiffviewOneSidedLayout Layout used for files whose diff is one-sided (status `A`/`?` or `D`). `"default"` keeps the configured layout (a Diff2 leaves an empty pane; a `diff1_plain` keeps its diff-mode chrome). `"raw"` substitutes `diff1_raw`: a single non-diff window where `A`/`?` shows the b-side directly (editable working-tree buffer when b is `LOCAL`, read-only when b is a commit rev) and `D` shows the pre-deletion content from `revs.a` (read-only when that's a commit; editable when it's the index, with `:w` writing back via the usual STAGE-0 path). Applies to both diff views and file history views, and to `diff1_plain` and Diff2 base layouts. Has no effect on `diff1_inline` (which already renders one-sided content coherently), on renames, modifications, merge conflicts, or when file history's `pin_local` mode owns the right-hand window. See `|diffview-config-view.one_sided_layout|`.
   ---@field cycle_layouts? DiffviewCycleLayouts.user Layouts to cycle through with `cycle_layout`.
   ---@field inline? DiffviewInlineConfig.user Options that apply to the `diff1_inline` layout.
@@ -379,6 +381,11 @@ M.defaults = {
     -- Initial 'foldlevel' for diff buffers. Default 0 collapses unchanged
     -- regions; set to a high value (e.g. 99) to keep all folds open.
     foldlevel = 0,
+    -- Set 'winfixbuf' on diff windows so accidental buffer swaps (LSP
+    -- jumps, `gf`, quickfix, etc.) fail loudly with E1513 instead of
+    -- silently breaking the layout. Diffview's own file cycling and
+    -- layout rebuilds bypass the guard. Opt-in; default off.
+    winfixbuf = false,
     -- Layout used for files whose diff is one-sided (added, untracked, or
     -- deleted). `"default"` keeps the configured layout. `"raw"` substitutes
     -- `diff1_raw`: a single non-diff window where additions and untracked
@@ -1603,6 +1610,8 @@ function M.setup(user_config)
     min = 0,
     path = "view.foldlevel",
   })
+
+  validate.boolean(view, "winfixbuf", d.view.winfixbuf, { path = "view.winfixbuf" })
 
   validate.enum(view, "one_sided_layout", { "default", "raw" }, d.view.one_sided_layout, {
     path = "view.one_sided_layout",

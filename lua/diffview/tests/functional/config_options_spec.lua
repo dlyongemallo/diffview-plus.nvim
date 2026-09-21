@@ -125,6 +125,42 @@ describe("mark_placement", function()
   end)
 end)
 
+describe("view.winfixbuf", function()
+  local original
+  local utils = require("diffview.utils")
+  local orig_err
+  local orig_warn
+
+  before_each(function()
+    original = vim.deepcopy(config.get_config())
+    orig_err = utils.err
+    orig_warn = utils.warn
+    utils.err = function() end
+    utils.warn = function() end
+  end)
+
+  after_each(function()
+    config.setup(original)
+    utils.err = orig_err
+    utils.warn = orig_warn
+  end)
+
+  it("defaults to false", function()
+    local conf = setup_with({})
+    assert.is_false(conf.view.winfixbuf)
+  end)
+
+  it("survives setup() when set to true", function()
+    local conf = setup_with({ view = { winfixbuf = true } })
+    assert.is_true(conf.view.winfixbuf)
+  end)
+
+  it("rejects non-boolean values and falls back to the default", function()
+    local conf = setup_with({ view = { winfixbuf = "yes-please" } })
+    assert.is_false(conf.view.winfixbuf)
+  end)
+end)
+
 describe("view.inline.style", function()
   local original
   local utils = require("diffview.utils")
