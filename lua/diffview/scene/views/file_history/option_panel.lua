@@ -7,6 +7,7 @@ local arg_parser = lazy.require("diffview.arg_parser") ---@module "diffview.arg_
 local config = lazy.require("diffview.config") ---@module "diffview.config"
 local oop = lazy.require("diffview.oop") ---@module "diffview.oop"
 local panel_renderer = lazy.require("diffview.scene.views.file_history.render") ---@module "diffview.scene.views.file_history.render"
+local renderer = lazy.require("diffview.renderer") ---@module "diffview.renderer"
 local utils = lazy.require("diffview.utils") ---@module "diffview.utils"
 
 local api = vim.api
@@ -167,6 +168,16 @@ function FHOptionPanel:setup_buffer()
 end
 
 function FHOptionPanel:update_components()
+  if not self.render_data then
+    return
+  end
+
+  self.render_data:destroy()
+  if self.components then
+    renderer.destroy_comp_struct(self.components)
+    self.components = nil
+  end
+
   local switch_schema = {}
   local option_schema = {}
   for _, option in ipairs(self.flags.switches) do

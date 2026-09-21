@@ -115,6 +115,7 @@ function FilePanel:update_components()
   self.render_data:destroy()
   if self.components then
     renderer.destroy_comp_struct(self.components)
+    self.components = nil
   end
 
   local conflicting_files
