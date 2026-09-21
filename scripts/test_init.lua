@@ -31,6 +31,7 @@ function M.setup()
   -- which can intermittently fail with E303 when that mkdir races other
   -- state writes. Disable them so tests can create named buffers freely.
   vim.opt.swapfile = false
+  vim.opt.shadafile = "NONE"
   vim.opt.runtimepath:append(M.root())
   vim.opt.packpath = { M.root(".tests/site") }
   M.load("nvim-lua/plenary.nvim")
