@@ -660,6 +660,12 @@ end
 
 function File:detach_buffer()
   if self.bufnr then
+    -- Missing/binary sides share this buffer. A removed entry must not detach
+    -- the keymaps of another entry that is still displaying it.
+    if self.bufnr == File.NULL_FILE.bufnr and lib.is_buf_in_use(self.bufnr, { self }) then
+      return
+    end
+
     local state = File.attached[self.bufnr]
 
     if state then
