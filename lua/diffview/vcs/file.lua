@@ -531,6 +531,7 @@ end
 ---@field keymaps? table
 ---@field saved_keymaps table<string, table> Original buffer keymaps saved before overwriting.
 ---@field disable_diagnostics boolean
+---@field null_owners? table<vcs.File, boolean>
 
 ---Save any existing buffer-local keymap for the given mode and lhs before
 ---diffview overwrites it, so we can restore it on detach.
@@ -627,6 +628,13 @@ function File:attach_buffer(force, opt)
         pcall(vim.lsp.inlay_hint.enable, false, { bufnr = self.bufnr })
       end
 
+      -- Missing/binary sides share the null buffer. Track attached files,
+      -- since loaded files can remain valid after detaching.
+      if self.bufnr == File.NULL_FILE.bufnr and self ~= File.NULL_FILE then
+        state.null_owners = state.null_owners or {}
+        state.null_owners[self] = true
+      end
+
       File.attached[self.bufnr] = state
 
       -- Keymaps are registered asynchronously (after buffer creation and
@@ -660,15 +668,16 @@ end
 
 function File:detach_buffer()
   if self.bufnr then
-    -- Missing/binary sides share this buffer. A removed entry must not detach
-    -- the keymaps of another entry that is still displaying it.
-    if self.bufnr == File.NULL_FILE.bufnr and lib.is_buf_in_use(self.bufnr, { self }) then
-      return
-    end
-
     local state = File.attached[self.bufnr]
 
     if state then
+      if state.null_owners then
+        state.null_owners[self] = nil
+        if next(state.null_owners) then
+          return
+        end
+      end
+
       -- Keymaps: remove diffview's mappings.
       for lhs, mapping in pairs(state.keymaps) do
         if type(lhs) == "number" then

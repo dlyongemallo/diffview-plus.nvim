@@ -21,10 +21,10 @@ describe("shared null-buffer keymaps", function()
     config.setup(original_config)
   end)
 
-  for _, status in ipairs({ "D", "A" }) do
+  for _, status in ipairs({ "D", "A", "M" }) do
     it(
       "preserves staging on a "
-        .. (status == "D" and "deleted" or "new")
+        .. (status == "D" and "deleted" or status == "A" and "new" or "binary")
         .. " file when an old entry is destroyed",
       helpers.async_test(function()
         local repo = helpers.make_repo()
@@ -32,12 +32,16 @@ describe("shared null-buffer keymaps", function()
         local paths = { "a.txt", "b.txt" }
         local ok, err = pcall(function()
           for _, path in ipairs(paths) do
-            helpers.write(repo, path, { "contents of " .. path })
+            helpers.write(repo, path, { status == "M" and "\0old" or "contents of " .. path })
           end
-          if status == "D" then
-            helpers.commit(repo, "files to delete")
+          if status ~= "A" then
+            helpers.commit(repo, "files to change")
             for _, path in ipairs(paths) do
-              assert.equals(0, vim.fn.delete(repo .. "/" .. path))
+              if status == "D" then
+                assert.equals(0, vim.fn.delete(repo .. "/" .. path))
+              else
+                helpers.write(repo, path, { "\0new" })
+              end
             end
           end
 
@@ -50,10 +54,23 @@ describe("shared null-buffer keymaps", function()
           async.await(view:set_file(previous))
           async.await(view:set_file(view.files.working[2]))
           local layout = view.cur_layout --[[@as Diff2 ]]
-          local win = status == "D" and layout.b or layout.a
+          local win = status == "A" and layout.a or layout.b
           vim.api.nvim_set_current_win(win.id)
           assert.equals(File.NULL_FILE.bufnr, vim.api.nvim_get_current_buf())
           assert.is_function(vim.fn.maparg(" s", "n", false, true).callback)
+
+          if status == "M" then
+            assert.equals(File.NULL_FILE.bufnr, layout.a.file.bufnr)
+            -- Detaching one binary side preserves the other's mappings;
+            -- the last detach cleans up even though both files remain valid.
+            layout.a.file:detach_buffer()
+            layout.a.file:detach_buffer()
+            assert.is_function(vim.fn.maparg(" s", "n", false, true).callback)
+            layout.b.file:detach_buffer()
+            assert.is_nil(File.attached[File.NULL_FILE.bufnr])
+            assert.is_nil(vim.fn.maparg(" s", "n", false, true).callback)
+            async.await(layout:open_files())
+          end
 
           -- A staging refresh can remove the previous entry after navigation
           -- has already attached the next entry to the shared null buffer.
