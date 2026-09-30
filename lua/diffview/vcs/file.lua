@@ -628,13 +628,6 @@ function File:attach_buffer(force, opt)
         pcall(vim.lsp.inlay_hint.enable, false, { bufnr = self.bufnr })
       end
 
-      -- Missing/binary sides share the null buffer. Track attached files,
-      -- since loaded files can remain valid after detaching.
-      if self.bufnr == File.NULL_FILE.bufnr and self ~= File.NULL_FILE then
-        state.null_owners = state.null_owners or {}
-        state.null_owners[self] = true
-      end
-
       File.attached[self.bufnr] = state
 
       -- Keymaps are registered asynchronously (after buffer creation and
@@ -661,6 +654,18 @@ function File:attach_buffer(force, opt)
           api.nvim_exec_autocmds("BufReadPost", { buffer = self.bufnr, modeline = false })
         end)
         vim.o.eventignore = saved_ei
+      end
+    end
+
+    -- Missing/binary sides share the null buffer. Record each attaching
+    -- File as an owner so `detach_buffer` only releases the shared state
+    -- once the last owner is gone. Tracked outside the setup block so a
+    -- future caller that reuses matching opt (or none) still registers.
+    if self.bufnr == File.NULL_FILE.bufnr and self ~= File.NULL_FILE then
+      local st = File.attached[self.bufnr]
+      if st then
+        st.null_owners = st.null_owners or {}
+        st.null_owners[self] = true
       end
     end
   end
