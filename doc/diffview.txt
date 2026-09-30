@@ -699,8 +699,10 @@ hide_merge_artifacts                            *diffview-config-hide_merge_arti
 auto_close_on_empty                             *diffview-config-auto_close_on_empty*
         Type: `boolean`, Default: `false`
 
-        Automatically close the Diffview when the last file is staged or
-        resolved.
+        Automatically close a Diffview that holds no files, and report that
+        there is nothing to display instead of opening one that would.
+
+        A view with unsaved stage buffers is kept open until they are written.
 
 large_file_threshold                            *diffview-config-large_file_threshold*
         Type: `integer`, Default: `0`

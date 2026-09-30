@@ -34,7 +34,7 @@ DEFAULT CONFIG                                  *diffview.defaults*
     show_root_path = true,    -- Show repository root path in panel headers.
     watch_index = true,       -- Update views and index buffers when the git index changes.
     hide_merge_artifacts = false, -- Hide merge artifact files (*.orig, *.BACKUP.*, *.BASE.*, *.LOCAL.*, *.REMOTE.*)
-    auto_close_on_empty = false, -- Close diffview when the last file is staged/resolved
+    auto_close_on_empty = false, -- Close diffview when it holds no files
     wrap_entries = true,      -- Wrap around when navigating past the first/last file entry.
     large_file_threshold = 0, -- Line count above which treesitter is disabled on non-LOCAL diff buffers. 0 = disabled.
     diffopt = {},             -- Override diffopt settings while diffview is open. Restored on close.
