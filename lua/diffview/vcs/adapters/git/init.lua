@@ -398,6 +398,26 @@ function GitAdapter:worktree_list()
   return git_worktree.parse_worktree_list(out)
 end
 
+---Pick a reasonable comparison base for "what has this branch added".
+---Tries, in priority order: `origin/HEAD`, `origin/main`, `origin/master`,
+---`main`, `master`. Returns the first rev that `git rev-parse` resolves to a
+---commit, or `nil` when none of these refs exist. Probes are logged at debug
+---level only so expected misses do not spam the log.
+---@return string? rev
+function GitAdapter:resolve_default_base()
+  local candidates = { "origin/HEAD", "origin/main", "origin/master", "main", "master" }
+  for _, rev in ipairs(candidates) do
+    local _, code = self:exec_sync({ "rev-parse", "--verify", "--quiet", rev .. "^{commit}" }, {
+      cwd = self.ctx.toplevel,
+      log_opt = { label = "GitAdapter:resolve_default_base()", debug_level = 1 },
+    })
+    if code == 0 then
+      return rev
+    end
+  end
+  return nil
+end
+
 ---Verify that a given git rev is valid.
 ---@param rev_arg string
 ---@return boolean ok, string[] output
