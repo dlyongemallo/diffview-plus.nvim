@@ -118,6 +118,7 @@ local LayoutMode = oop.enum({
 
 ---@class diffview.View.CloseOpts
 ---@field force? boolean
+---@field silent? boolean Abort without reporting why.
 
 ---@class View : diffview.Object
 ---@field tabpage integer
