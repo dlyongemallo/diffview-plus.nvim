@@ -704,15 +704,12 @@ function FileHistoryPanel:highlight_item(item)
       local i = utils.vec_indexof(entry.files --[[@as FileEntry[] ]], item)
 
       if i ~= -1 then
-        if self.single_file then
+        -- single_file renders no file rows; a folded entry must not be
+        -- expanded just to park the cursor on one (l / h are the explicit
+        -- fold controls). Both park on the entry row, like `_restore_state`.
+        if self.single_file or entry.folded then
           target_row = comp_struct.comp.lstart + 1
         else
-          if entry.folded then
-            entry.folded = false
-            self:render()
-            self:redraw()
-          end
-
           target_row = comp_struct.comp.lstart + i + 1
         end
       elseif entry._pin_overlays and entry._pin_overlays[item.path] == item then
