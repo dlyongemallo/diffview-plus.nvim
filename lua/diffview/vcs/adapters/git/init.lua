@@ -418,6 +418,118 @@ function GitAdapter:resolve_default_base()
   return nil
 end
 
+---@class GitAdapter.WorktreeStats
+---@field base? string # The resolved comparison base, or nil if none.
+---@field ahead integer # Commits reachable from HEAD but not from `base`.
+---@field behind integer # Commits reachable from `base` but not from HEAD.
+---@field changed_files integer # From `git diff --numstat <base>...HEAD`.
+---@field insertions integer
+---@field deletions integer
+---@field staged integer # Index-vs-HEAD changes from `git status --porcelain`.
+---@field unstaged integer # Worktree-vs-index changes.
+---@field untracked integer
+---@field errors string[] # Tags of probes that returned non-zero: `"rev-list"`, `"diff"`, `"status"`. Non-empty means the counts are partial; callers that would act destructively on a seemingly clean worktree must treat that as unknown state. A `nil` base is not an error (branch probes are skipped and `errors` stays empty for them).
+
+---Collect branch-vs-base and working-tree stats for the adapter's worktree.
+---Runs three git probes from `self.ctx.toplevel`: `rev-list --left-right
+-----count` for ahead/behind, `diff --numstat` for the branch diff, and
+---`status --porcelain=v1 -uall` for dirty counts. When `resolve_default_base`
+---yields no base, the branch probes are skipped and only dirty counts are
+---populated. `git status` is invoked with `--no-optional-locks` so a
+---concurrent caller holding `index.lock` does not force a spurious failure.
+---
+---Sync for now; later versions will batch these across worktrees via
+---`MultiJob` so the overview's refresh does not block on O(N) sequential
+---git calls.
+---@return GitAdapter.WorktreeStats
+function GitAdapter:worktree_stats()
+  local stats = {
+    base = nil,
+    ahead = 0,
+    behind = 0,
+    changed_files = 0,
+    insertions = 0,
+    deletions = 0,
+    staged = 0,
+    unstaged = 0,
+    untracked = 0,
+    errors = {},
+  }
+
+  local base = self:resolve_default_base()
+  stats.base = base
+
+  if base then
+    local range = base .. "...HEAD"
+
+    local out, code = self:exec_sync({ "rev-list", "--left-right", "--count", range }, {
+      cwd = self.ctx.toplevel,
+      log_opt = { label = "GitAdapter:worktree_stats()" },
+    })
+    -- `rev-list --left-right --count A...B` prints "<left>\t<right>", where
+    -- "left" is reachable from A but not B. With range = `base...HEAD` that
+    -- maps to `<behind>\t<ahead>`.
+    if code == 0 then
+      if out[1] then
+        local behind, ahead = out[1]:match("(%d+)%s+(%d+)")
+        stats.behind = tonumber(behind) or 0
+        stats.ahead = tonumber(ahead) or 0
+      end
+    else
+      table.insert(stats.errors, "rev-list")
+    end
+
+    out, code = self:exec_sync({ "diff", "--numstat", range }, {
+      cwd = self.ctx.toplevel,
+      log_opt = { label = "GitAdapter:worktree_stats()" },
+    })
+    -- `diff --numstat` prints "<insertions>\t<deletions>\t<path>" per changed
+    -- file. Binary files report "-\t-" instead of counts; treat those as zero.
+    -- Unlike `--shortstat`, this format is not localized by git.
+    if code == 0 then
+      for _, line in ipairs(out) do
+        local ins, dels = line:match("^(%S+)\t(%S+)\t")
+        if ins then
+          stats.changed_files = stats.changed_files + 1
+          stats.insertions = stats.insertions + (tonumber(ins) or 0)
+          stats.deletions = stats.deletions + (tonumber(dels) or 0)
+        end
+      end
+    else
+      table.insert(stats.errors, "diff")
+    end
+  end
+
+  local out, code = self:exec_sync({ "--no-optional-locks", "status", "--porcelain=v1", "-uall" }, {
+    cwd = self.ctx.toplevel,
+    log_opt = { label = "GitAdapter:worktree_stats()" },
+  })
+  -- Porcelain v1: each line's first two chars are "XY <path>". X is the
+  -- index-vs-HEAD status, Y is worktree-vs-index. "??" means untracked.
+  if code == 0 then
+    for _, line in ipairs(out) do
+      if #line >= 2 then
+        local xy = line:sub(1, 2)
+        if xy == "??" then
+          stats.untracked = stats.untracked + 1
+        else
+          local x, y = xy:sub(1, 1), xy:sub(2, 2)
+          if x ~= " " and x ~= "?" then
+            stats.staged = stats.staged + 1
+          end
+          if y ~= " " and y ~= "?" then
+            stats.unstaged = stats.unstaged + 1
+          end
+        end
+      end
+    end
+  else
+    table.insert(stats.errors, "status")
+  end
+
+  return stats
+end
+
 ---Verify that a given git rev is valid.
 ---@param rev_arg string
 ---@return boolean ok, string[] output

@@ -13,6 +13,7 @@ local M = {}
 ---@field lock_reason? string # Free-form reason from `git worktree lock -r`, if any.
 ---@field is_prunable boolean
 ---@field prune_reason? string # Reason git flagged this worktree as prunable, if any.
+---@field stats? GitAdapter.WorktreeStats # Populated by callers that collect stats; the parser leaves it nil.
 
 ---Convert `git worktree list --porcelain` output into typed entries.
 ---
