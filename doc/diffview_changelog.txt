@@ -19,6 +19,10 @@ base.
 Bare worktrees are hidden by default; set `include_bare = true` under
 `worktree_overview` to show them.
 
+Companion plugins can register extra status-column providers to annotate
+rows with external state (for example, an attached coding-agent session
+per worktree); see |diffview-worktree-overview-hooks|.
+
                                                 *diffview.changelog-session-restoration*
 
 Open `:DiffviewOpen` and `:DiffviewFileHistory` views now survive a

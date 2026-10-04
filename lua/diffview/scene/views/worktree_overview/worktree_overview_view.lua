@@ -19,6 +19,7 @@ local HL = {
   branch = "DiffviewReference",
   bare = "DiffviewNonText",
   detached = "DiffviewReference",
+  status = "DiffviewFilePanelCounter",
   arrow = "DiffviewNonText",
   counter = "DiffviewFilePanelCounter",
   files_suffix = "DiffviewNonText",
@@ -33,6 +34,52 @@ local HL = {
 
 local M = {}
 
+---@alias WorktreeOverviewView.StatusProvider fun(entry: GitAdapter.WorktreeEntry): string?
+
+---Forward-declared so `WorktreeOverviewView:refresh` can call it to resolve
+---each row's status outside the render path. Definition is further below.
+---@type fun(entry: GitAdapter.WorktreeEntry): string
+local format_status
+
+---Companion plugins (`diffview-coding-agents.nvim` and friends) register
+---here to fill the overview's status column from external state. Multiple
+---providers are supported; the view calls each one per entry, filters nil
+---and empty returns, and joins the rest with a space.
+---@type WorktreeOverviewView.StatusProvider[]
+local status_providers = {}
+
+---Register a status provider. Return `nil` or `""` to leave an entry blank.
+---
+---Contract:
+---  - Providers are called synchronously on the main loop during a refresh,
+---    once per entry. They must return quickly: perform any blocking work
+---    (shell-outs, `/proc` scans, HTTP calls) off the main loop and return
+---    the latest cached value here. A slow provider blocks the refresh and
+---    the editor.
+---  - Returned strings must not contain `\n` or `\r`; the view defensively
+---    collapses them to spaces to avoid E5086 at render time, but a provider
+---    that passes multi-line output through will lose structure.
+---  - Errors raised by the provider are swallowed with `pcall` so a broken
+---    companion plugin cannot take the overview down.
+---@param fn WorktreeOverviewView.StatusProvider
+function M.register_status_provider(fn)
+  table.insert(status_providers, fn)
+end
+
+---@param fn WorktreeOverviewView.StatusProvider
+function M.unregister_status_provider(fn)
+  for i = #status_providers, 1, -1 do
+    if status_providers[i] == fn then
+      table.remove(status_providers, i)
+    end
+  end
+end
+
+---Remove every registered status provider. Mainly for tests.
+function M.clear_status_providers()
+  status_providers = {}
+end
+
 ---Skeleton view that lists every linked git worktree in a single buffer.
 ---@class WorktreeOverviewView : View
 ---@field adapter GitAdapter
@@ -41,6 +88,7 @@ local M = {}
 ---@field bufnr integer?
 ---@field winid integer?
 ---@field render_data RenderData?
+---@field _status_by_path? table<string, string> # `refresh` resolves each row's status column into this map so `render` reads strings instead of calling providers in its hot path.
 ---@field _spinner_timer uv_timer_t?
 ---@field _spinner_start? integer # hrtime nanoseconds at the start of this spin.
 ---@field _spinner_frame? integer # Next frame index to paint.
@@ -180,6 +228,14 @@ function WorktreeOverviewView:post_open()
   -- (well after refresh), so the user sees a frozen UI for the scan.
   vim.cmd("redraw")
 
+  -- Emit `worktree_overview_opened` before the initial refresh so the
+  -- lifecycle order a subscriber sees is `opened` then `refreshed`.
+  -- The view is still being populated at this point (`self.ready` is
+  -- false and `self.entries` is nil), but the handle alone is enough
+  -- to prep per-view state; data arrives on the first
+  -- `worktree_overview_refreshed`.
+  DiffviewGlobal.emitter:emit("worktree_overview_opened", self)
+
   self:_start_spinner()
   local ok, err = pcall(function()
     self:refresh()
@@ -287,8 +343,44 @@ function WorktreeOverviewView:refresh()
   end
   self:_tick_spinner()
 
+  -- Resolve every row's status column up front so `render` is pure
+  -- string plumbing instead of fanning out to each provider during the
+  -- extmark pass. Providers may be expensive on first call (sidekick's,
+  -- for instance, shells out to `/proc` + `lsof`); doing N of those
+  -- while the spinner is stopped would freeze the UI post-spinner.
+  self._status_by_path = {}
+  for _, e in ipairs(entries) do
+    self._status_by_path[e.path] = format_status(e)
+  end
+  self:_tick_spinner()
+
   self.entries = entries
   self:render()
+  DiffviewGlobal.emitter:emit("worktree_overview_refreshed", self, entries)
+end
+
+---Collect the status column text for one entry, by polling every registered
+---provider in order and joining their non-empty returns with a space.
+---@param e GitAdapter.WorktreeEntry
+---@return string
+function format_status(e)
+  if #status_providers == 0 then
+    return ""
+  end
+  local parts = {}
+  for _, fn in ipairs(status_providers) do
+    local ok, result = pcall(fn, e)
+    if ok and type(result) == "string" and result ~= "" then
+      -- `nvim_buf_set_lines` rejects any embedded `\n` with E5086 and
+      -- would propagate past the per-provider `pcall`, taking the whole
+      -- view down. Flatten `\r` and `\n` to spaces defensively so a
+      -- provider that leaks a trailing newline from a shell call (or
+      -- returns a multi-line summary) cannot crash the render.
+      result = result:gsub("[\r\n]+", " ")
+      parts[#parts + 1] = result
+    end
+  end
+  return table.concat(parts, " ")
 end
 
 ---Pick the branch-column text and highlight for one entry.
@@ -344,12 +436,16 @@ end
 
 ---Measure the per-column widths needed to align every visible row. Numeric
 ---columns are measured as digit counts; the branch column is measured by
----display width so that double-wide chars don't break alignment.
+---display width so that double-wide chars don't break alignment. Pass
+---`status_by_path` (nil when no status provider is registered) and the
+---status column is sized to the widest resolved string across entries.
 ---@param entries GitAdapter.WorktreeEntry[]
+---@param status_by_path? table<string, string>
 ---@return table
-local function compute_widths(entries)
+local function compute_widths(entries, status_by_path)
   local w = {
     branch = 1,
+    status = 0,
     ahead = 1,
     behind = 1,
     files = 1,
@@ -362,6 +458,10 @@ local function compute_widths(entries)
   for _, e in ipairs(entries) do
     local label = branch_label(e, false)
     w.branch = math.max(w.branch, vim.fn.strdisplaywidth(label))
+    if status_by_path then
+      local s = status_by_path[e.path] or ""
+      w.status = math.max(w.status, vim.fn.strdisplaywidth(s))
+    end
     if e.stats then
       w.ahead = math.max(w.ahead, #tostring(e.stats.ahead))
       w.behind = math.max(w.behind, #tostring(e.stats.behind))
@@ -541,6 +641,7 @@ function WorktreeOverviewView:render()
 
   local cwd_top = self.cwd_path
   local cfg = config.get_config().worktree_overview or {}
+  local has_status = #status_providers > 0
 
   -- Hide bare worktrees by default; `enter_selected` would reject them
   -- anyway. `self.entries` is left intact so callers that iterate it see
@@ -559,7 +660,7 @@ function WorktreeOverviewView:render()
     return
   end
 
-  local w = compute_widths(visible)
+  local w = compute_widths(visible, has_status and self._status_by_path or nil)
   local prefix_len = common_dir_prefix_len(visible)
 
   for i, e in ipairs(visible) do
@@ -572,6 +673,18 @@ function WorktreeOverviewView:render()
     push(ctx, label, label_hl)
     pad(ctx, w.branch - vim.fn.strdisplaywidth(label))
     push(ctx, "  ")
+
+    -- Omit the status column entirely when no provider is registered so
+    -- the stock view does not render dead space.
+    if has_status then
+      -- Resolved in `refresh`; the nil fallback covers a re-render
+      -- after a transient `worktree_list` failure that returned before
+      -- the map was populated.
+      local status = (self._status_by_path or {})[e.path] or ""
+      push(ctx, status, HL.status)
+      pad(ctx, w.status - vim.fn.strdisplaywidth(status))
+      push(ctx, "  ")
+    end
 
     push_stats_cells(ctx, e, w)
     push(ctx, " ")
@@ -642,6 +755,10 @@ function WorktreeOverviewView:enter_selected()
     -- but not from the merge-base with `A`. Matches the usual review scope.
     table.insert(args, base .. "...")
   end
+
+  -- Emit before dispatching so a subscriber can prepare per-worktree state
+  -- (focus a session, re-arm a status provider) in time for the DiffView.
+  DiffviewGlobal.emitter:emit("worktree_overview_entered", self, entry)
 
   require("diffview").open(args)
 end

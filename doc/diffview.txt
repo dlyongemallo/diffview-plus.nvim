@@ -1539,6 +1539,62 @@ worktree_overview                               *diffview-config-worktree_overvi
                 Stats are never collected for a bare worktree, and `<CR>`
                 continues to reject them regardless.
 
+                                                *diffview-worktree-overview-hooks*
+        Companion plugins can decorate the overview and react to its
+        lifecycle through two surfaces:
+
+        1. A status-column provider registry on the view module.
+           Providers are called per entry on refresh (not on every
+           render); non-empty returns are joined with a space, cached
+           by worktree path, and shown in a dedicated column on later
+           renders. Refresh the view to invalidate the cache; a bare
+           `render` call will not. Errors raised by a provider are
+           swallowed. >lua
+
+           local overview = require(
+             "diffview.scene.views.worktree_overview.worktree_overview_view"
+           )
+           overview.register_status_provider(function(entry)
+             return my_agent_bridge.state_for(entry.path)
+           end)
+<
+           Provider contract: ~
+             • Providers run synchronously on the main loop during
+               each refresh. They must return quickly, so do any
+               blocking work (shell-outs, `/proc` scans, HTTP calls)
+               off the main loop and return the latest cached value
+               from the provider. A slow provider blocks the refresh
+               and freezes the editor.
+             • Returned strings must not contain `\n` or `\r`. The
+               view flattens any such characters to spaces defensively
+               to keep |nvim_buf_set_lines()| from raising `E5086`,
+               but multi-line output will lose its structure.
+             • A `nil` or `""` return leaves the entry blank.
+        2. Three lifecycle hooks: `worktree_overview_opened`,
+           `worktree_overview_refreshed`, and `worktree_overview_entered`.
+           They are configured through the same `hooks` config table as
+           every other Diffview hook, so the callback signatures match
+           what is documented under |diffview-config-hooks|: >lua
+
+           require("diffview").setup({
+             hooks = {
+               worktree_overview_opened = function(view) ... end,
+               worktree_overview_refreshed = function(view, entries) ... end,
+               worktree_overview_entered = function(view, entry) ... end,
+             },
+           })
+<
+           Plugin authors who need to subscribe programmatically can
+           listen on `require("diffview.config").user_emitter`, which
+           receives every Diffview event. The emitter prepends an
+           `Event` object to the arguments, so match the pattern used
+           by the configured `hooks` table and drop it with `_`: >lua
+
+           require("diffview.config").user_emitter:on(
+             "worktree_overview_opened",
+             function(_, view) ... end
+           )
+<
 hooks                                           *diffview-config-hooks*
         Type: `table<string, function>`, Default: `{}`
 
@@ -1584,6 +1640,39 @@ hooks                                           *diffview-config-hooks*
                 Callback Parameters: ~
                     {view} (`View`)
                         The `View` whose layout was adjusted.
+
+            {worktree_overview_opened} (`fun(view: WorktreeOverviewView)`)
+                Emitted once from the worktree overview's `post_open`, after
+                the initial refresh has populated the buffer.
+
+                Callback Parameters: ~
+                    {view} (`WorktreeOverviewView`)
+                        The overview view that was opened.
+
+            {worktree_overview_refreshed} (`fun(view: WorktreeOverviewView, entries: GitAdapter.WorktreeEntry[])`)
+                Emitted after each successful refresh of the worktree
+                overview. A refresh that fails to query the worktree list
+                does not emit this event, so consumers that need a
+                completion signal must treat it as success-only.
+
+                Callback Parameters: ~
+                    {view} (`WorktreeOverviewView`)
+                        The overview view that was refreshed.
+                    {entries} (`GitAdapter.WorktreeEntry[]`)
+                        The full list of entries, bare worktrees
+                        included.
+
+            {worktree_overview_entered} (`fun(view: WorktreeOverviewView, entry: GitAdapter.WorktreeEntry)`)
+                Emitted right before `<CR>` on an overview row dispatches
+                to a scoped |:DiffviewOpen|. Fires before the dispatched
+                view opens, so subscribers can prepare per-worktree state
+                in time.
+
+                Callback Parameters: ~
+                    {view} (`WorktreeOverviewView`)
+                        The overview view the user entered from.
+                    {entry} (`GitAdapter.WorktreeEntry`)
+                        The entry whose row the user activated.
 
             {diff_buf_read} (`fun(bufnr: integer, ctx: table)`)
                 Emitted after a new diff buffer is ready (the first time it's
