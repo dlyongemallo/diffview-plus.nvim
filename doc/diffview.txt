@@ -598,6 +598,18 @@ COMMANDS                                        *diffview-commands*
                         working-tree buffers are unaffected; use Vim's
                         `:edit!` on them via the standard mechanism.
 
+                                                *:DiffviewWorktreeOverview*
+:DiffviewWorktreeOverview
+                        Open the cross-worktree overview: a dedicated
+                        tabpage listing every linked git worktree.
+
+                        Default keymaps on the overview buffer: >
+                            q      close the overview
+                            R      re-scan worktrees
+                            <CR>   open DiffView for the selected worktree
+<
+                        Git only.
+
                                                 *:DiffviewLog*
 :DiffviewLog            Open the debug log.
 

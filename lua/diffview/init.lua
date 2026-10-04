@@ -188,6 +188,73 @@ function M.dir_diff(args)
   end
 end
 
+---Resolve a `GitAdapter` for the overview when `M.get_adapter()` either
+---finds no toplevel (a bare repo root, or a dir resolving to a bare
+---`--git-dir`) or returns a non-Git adapter first (e.g., a colocated
+---Git/Jujutsu repo with `preferred_adapter = "jj"`). `worktree_list`
+---enumerates every worktree regardless of which one the adapter is bound
+---to, so attaching to any linked worktree still yields the full overview,
+---including the bare entry.
+---@return GitAdapter?
+local function resolve_git_overview_adapter()
+  local cwd = vim.uv.cwd()
+  if not cwd then
+    return nil
+  end
+  local git_cmd = config.get_config().git_cmd
+  local _, probe_code = utils.job(utils.flatten({ git_cmd, { "rev-parse", "--git-dir" } }), cwd)
+  if probe_code ~= 0 then
+    return nil
+  end
+  local out, code =
+    utils.job(utils.flatten({ git_cmd, { "worktree", "list", "--porcelain" } }), cwd)
+  if code ~= 0 then
+    return nil
+  end
+  local git = require("diffview.vcs.adapters.git")
+  local entries = require("diffview.vcs.adapters.git.worktree").parse_worktree_list(out)
+  for _, entry in ipairs(entries) do
+    if not entry.is_bare then
+      local err, adapter = git.GitAdapter.create(entry.path, {}, nil)
+      if not err then
+        return adapter
+      end
+    end
+  end
+  return nil
+end
+
+---Open the cross-worktree overview for the current repository.
+---Skeleton: git-only, no base/stat collection yet; later passes extend it.
+function M.worktree_overview()
+  -- Try `get_adapter` first so a worktree-rooted invocation remembers
+  -- *which* worktree we were in; the overview stars that row. We fall
+  -- through to the Git-specific resolver when `get_adapter` returns
+  -- nothing (bare repo root, or a dir resolving to a bare `--git-dir`)
+  -- or returns a non-Git adapter (e.g., a colocated Git/Jujutsu repo
+  -- with `preferred_adapter = "jj"`). The non-Git adapter's toplevel is
+  -- still a valid `cwd_path` because the Git worktree shares that path.
+  local adapter = M.get_adapter()
+  local cwd_path = adapter and adapter.ctx and adapter.ctx.toplevel or nil
+  if not adapter or adapter.config_key ~= "git" then
+    adapter = resolve_git_overview_adapter() or adapter
+  end
+  if not adapter then
+    utils.err("DiffviewWorktreeOverview must be run from inside a git worktree or bare repo.")
+    return
+  end
+  if adapter.config_key ~= "git" then
+    utils.err("DiffviewWorktreeOverview currently only supports git repositories.")
+    return
+  end
+
+  local WorktreeOverviewView =
+    require("diffview.scene.views.worktree_overview.worktree_overview_view").WorktreeOverviewView
+
+  local view = WorktreeOverviewView({ adapter = adapter, cwd_path = cwd_path })
+  view:open()
+end
+
 ---@param tabpage? integer # A tabpage handle. When given, the view occupying
 ---that tabpage is closed (a no-op if it is not a valid tabpage); otherwise the
 ---view in the current tabpage is closed.

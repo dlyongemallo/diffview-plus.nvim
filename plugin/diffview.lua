@@ -58,6 +58,10 @@ command("DiffviewClose", function(ctx)
   diffview.close(nil, { force = ctx.bang })
 end, { nargs = 0, bang = true })
 
+command("DiffviewWorktreeOverview", function()
+  diffview.worktree_overview()
+end, { nargs = 0 })
+
 command("DiffviewFocusFiles", function()
   diffview.emit("focus_files")
 end, { nargs = 0 })
