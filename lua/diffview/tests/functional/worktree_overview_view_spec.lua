@@ -36,8 +36,13 @@ describe("diffview.scene.views.worktree_overview WorktreeOverviewView", function
         assert.equals(2, #lines)
 
         local joined = table.concat(lines, "\n")
-        assert.is_truthy(joined:find(repo, 1, true))
-        assert.is_truthy(joined:find(linked, 1, true))
+        -- `render` strips the shared parent directory from every path, so
+        -- what shows up on each row is the basename (`repo`, `repo-wt`),
+        -- not the full `/tmp/.../repo` form.
+        local repo_name = vim.fs.basename(repo)
+        local linked_name = vim.fs.basename(linked)
+        assert.is_truthy(joined:find(repo_name, 1, true))
+        assert.is_truthy(joined:find(linked_name, 1, true))
         assert.is_truthy(joined:find("feature/x", 1, true))
 
         -- The linked worktree was branched off `make_repo`'s single commit
@@ -293,11 +298,17 @@ describe("diffview.scene.views.worktree_overview WorktreeOverviewView", function
         view:render()
         local lines = vim.api.nvim_buf_get_lines(view.bufnr, 0, -1, false)
         assert.equals(2, #lines)
+        -- `render` strips the shared parent directory, so lines carry
+        -- basenames rather than full paths. The errored basename ends in
+        -- `-errored`, which is unique; check it first so the clean row
+        -- picks up only the leftover.
+        local real_name = vim.fs.basename(real.path)
+        local errored_name = vim.fs.basename(errored.path)
         local clean_line, errored_line
         for _, line in ipairs(lines) do
-          if line:find(errored.path, 1, true) then
+          if line:find(errored_name, 1, true) then
             errored_line = line
-          elseif line:find(real.path, 1, true) then
+          elseif line:find(real_name, 1, true) then
             clean_line = line
           end
         end

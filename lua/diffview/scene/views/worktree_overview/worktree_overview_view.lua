@@ -197,6 +197,35 @@ local function branch_label(e, is_current)
   return e.branch or "(unknown)", is_current and HL.branch_cur or HL.branch
 end
 
+---Byte length of the longest `/`-aligned prefix shared by every entry
+---path (so no row ever shows a split basename). Returns 0 when there is
+---nothing worth stripping; `path:sub(len + 1)` then yields the original
+---path, so callers need no special case.
+---@param entries GitAdapter.WorktreeEntry[]
+---@return integer
+local function common_dir_prefix_len(entries)
+  if #entries < 2 then
+    return 0
+  end
+  local first = entries[1].path
+  local n = #first
+  for i = 2, #entries do
+    local other = entries[i].path
+    local m = math.min(n, #other)
+    local j = 0
+    while j < m and first:byte(j + 1) == other:byte(j + 1) do
+      j = j + 1
+    end
+    n = j
+    if n == 0 then
+      return 0
+    end
+  end
+  -- Trim back to the last `/` so a split dir name is never shown.
+  local sep = first:sub(1, n):find("/[^/]*$")
+  return sep or 0
+end
+
 ---Measure the per-column widths needed to align every visible row. Numeric
 ---columns are measured as digit counts; the branch column is measured by
 ---display width so that double-wide chars don't break alignment.
@@ -415,6 +444,7 @@ function WorktreeOverviewView:render()
   end
 
   local w = compute_widths(visible)
+  local prefix_len = common_dir_prefix_len(visible)
 
   for i, e in ipairs(visible) do
     local is_current = cwd_top and e.path == cwd_top or false
@@ -429,7 +459,7 @@ function WorktreeOverviewView:render()
 
     push_stats_cells(ctx, e, w)
     push(ctx, " ")
-    push(ctx, e.path, HL.path)
+    push(ctx, e.path:sub(prefix_len + 1), HL.path)
 
     data.lines[i] = table.concat(ctx.line)
   end
