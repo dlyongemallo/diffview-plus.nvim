@@ -439,11 +439,18 @@ function StandardView:_stage_layout(layout)
 
     -- If the panel was the only window before closing, then a temp window was
     -- already created by `Panel:close()`.
+    local pivot
     if not was_only_win then
-      vim.cmd("1windo aboveleft vsp")
+      local first_win = utils.tabpage_list_normal_wins(self.tabpage)[1]
+      if first_win then
+        api.nvim_win_call(first_win, function()
+          vim.cmd("aboveleft vsp")
+          pivot = api.nvim_get_current_win()
+        end)
+      end
+    else
+      pivot = api.nvim_get_current_win()
     end
-
-    local pivot = api.nvim_get_current_win()
 
     if was_open then
       self.panel:open()
