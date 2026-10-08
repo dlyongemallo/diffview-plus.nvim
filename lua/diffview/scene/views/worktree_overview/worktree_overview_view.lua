@@ -41,6 +41,9 @@ local M = {}
 ---@field bufnr integer?
 ---@field winid integer?
 ---@field render_data RenderData?
+---@field _spinner_timer uv_timer_t?
+---@field _spinner_start? integer # hrtime nanoseconds at the start of this spin.
+---@field _spinner_frame? integer # Next frame index to paint.
 ---@operator call : WorktreeOverviewView
 local WorktreeOverviewView = oop.create_class("WorktreeOverviewView", View.__get())
 
@@ -90,11 +93,101 @@ function WorktreeOverviewView:init_layout()
   api.nvim_buf_set_name(self.bufnr, ("diffview:///worktree_overview/%d"):format(self.bufnr))
 
   self:bind_keys()
+  self:paint_placeholder()
+end
+
+local SPINNER_FRAMES = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
+local SPINNER_INTERVAL_MS = 100
+
+---Paint the placeholder line. Called without arguments for the static
+---first frame; the spinner timer passes `frame_idx` and `elapsed_ms` to
+---animate it. `render` later reuses `self.render_data` and overwrites
+---whatever was last written here.
+---@param frame_idx? integer
+---@param elapsed_ms? integer
+function WorktreeOverviewView:paint_placeholder(frame_idx, elapsed_ms)
+  if not (self.bufnr and api.nvim_buf_is_valid(self.bufnr)) then
+    return
+  end
+  self.render_data = self.render_data or renderer.RenderData("diffview-worktree-overview")
+  local data = self.render_data ---@cast data RenderData
+  data:clear()
+  if frame_idx then
+    local frame = SPINNER_FRAMES[(frame_idx % #SPINNER_FRAMES) + 1]
+    data.lines = { ("%s Scanning worktrees... %.1fs"):format(frame, (elapsed_ms or 0) / 1000) }
+  else
+    data.lines = { "Scanning worktrees..." }
+  end
+  renderer.render(self.bufnr, data)
+end
+
+---Repaint the placeholder with the next spinner frame and flush. Driven
+---by both the libuv timer (while `vim.wait` is pumping) and explicit
+---calls from `refresh` at phase boundaries (where the main thread is
+---doing pure Lua work the timer cannot preempt).
+function WorktreeOverviewView:_tick_spinner()
+  if not self._spinner_start then
+    return
+  end
+  local elapsed_ms = math.floor((vim.uv.hrtime() - self._spinner_start) / 1e6)
+  self:paint_placeholder(self._spinner_frame, elapsed_ms)
+  self._spinner_frame = self._spinner_frame + 1
+  vim.cmd("redraw")
+end
+
+---Start a libuv timer that calls `_tick_spinner` every `SPINNER_INTERVAL_MS`
+---while `refresh` is blocked in `vim.wait`. `refresh` also ticks explicitly
+---between phases, so a `render` pass that outlives the last timer-driven
+---tick does not freeze on a stale frame.
+function WorktreeOverviewView:_start_spinner()
+  if self._spinner_timer then
+    return
+  end
+  self._spinner_start = vim.uv.hrtime()
+  self._spinner_frame = 0
+  local timer = assert(vim.uv.new_timer())
+  self._spinner_timer = timer
+  timer:start(
+    SPINNER_INTERVAL_MS,
+    SPINNER_INTERVAL_MS,
+    vim.schedule_wrap(function()
+      if self._spinner_timer ~= timer then
+        return
+      end
+      self:_tick_spinner()
+    end)
+  )
+end
+
+function WorktreeOverviewView:_stop_spinner()
+  local timer = self._spinner_timer
+  if not timer then
+    return
+  end
+  self._spinner_timer = nil
+  self._spinner_start = nil
+  timer:stop()
+  if not timer:is_closing() then
+    timer:close()
+  end
 end
 
 ---@override
 function WorktreeOverviewView:post_open()
-  self:refresh()
+  -- Force a redraw so the placeholder reaches the screen before
+  -- `refresh` blocks on its synchronous git probes. Without this, nvim
+  -- defers the new tabpage's first draw to the next event-loop return
+  -- (well after refresh), so the user sees a frozen UI for the scan.
+  vim.cmd("redraw")
+
+  self:_start_spinner()
+  local ok, err = pcall(function()
+    self:refresh()
+  end)
+  self:_stop_spinner()
+  if not ok then
+    error(err)
+  end
   self.ready = true
 end
 
@@ -103,13 +196,25 @@ end
 ---running during the wait, so the batch is bounded by the slowest single
 ---call rather than their sum.
 ---@param jobs diffview.Job[]
-local function run_batch(jobs)
+---@param yield_between? boolean # When true, yield 1ms to the event loop
+---  between syncs so a running spinner's scheduled callbacks drain. Omit
+---  for refreshes with no spinner (e.g., `refresh_files`), so they don't
+---  pay for a UI update that never happens.
+local function run_batch(jobs, yield_between)
   if #jobs == 0 then
     return
   end
   Job.start_all(jobs)
   for _, j in ipairs(jobs) do
     j:sync()
+    if yield_between then
+      -- Yield to the event loop so the spinner timer's scheduled callback
+      -- can run. Without this, when a `j:sync` returns immediately (the
+      -- job finished during an earlier sync's `vim.wait`), the next sync
+      -- starts before any main-loop iteration, scheduled callbacks pile
+      -- up, and the user sees a stale spinner frame.
+      vim.wait(1)
+    end
   end
 end
 
@@ -151,7 +256,9 @@ function WorktreeOverviewView:refresh()
       base_jobs[#base_jobs + 1] = j
     end
   end
-  run_batch(base_jobs)
+  local yield_between = self._spinner_start ~= nil
+  run_batch(base_jobs, yield_between)
+  self:_tick_spinner()
 
   local base = cfg.base or (base_parser and base_parser()) or nil
 
@@ -169,7 +276,8 @@ function WorktreeOverviewView:refresh()
       end
     end
   end
-  run_batch(stats_jobs)
+  run_batch(stats_jobs, yield_between)
+  self:_tick_spinner()
 
   for _, e in ipairs(entries) do
     local parse = stats_parsers[e.path]
@@ -177,6 +285,7 @@ function WorktreeOverviewView:refresh()
       e.stats = parse()
     end
   end
+  self:_tick_spinner()
 
   self.entries = entries
   self:render()

@@ -331,4 +331,88 @@ describe("diffview.scene.views.worktree_overview WorktreeOverviewView", function
       end
     end)
   )
+
+  it(
+    "paint_placeholder renders both the static and animated forms",
+    test_utils.async_test(function()
+      local repo = test_utils.make_repo()
+      local view
+      local ok, err = pcall(function()
+        view = WorktreeOverviewView({ adapter = make_adapter(repo) })
+        view:open()
+
+        -- Static form (no arguments): `init_layout` paints this before
+        -- `refresh` starts, so a human watching the open sees it first.
+        view:paint_placeholder()
+        local lines = vim.api.nvim_buf_get_lines(view.bufnr, 0, -1, false)
+        assert.equals(1, #lines)
+        assert.equals("Scanning worktrees...", lines[1])
+
+        -- Animated form: the first frame plus the elapsed-time suffix.
+        view:paint_placeholder(0, 2500)
+        lines = vim.api.nvim_buf_get_lines(view.bufnr, 0, -1, false)
+        assert.equals(1, #lines)
+        assert.is_truthy(lines[1]:find("Scanning worktrees...", 1, true))
+        assert.is_truthy(lines[1]:find("2.5s", 1, true))
+      end)
+
+      test_utils.close_view(view)
+      test_utils.cleanup_repo(repo)
+      async.await(async.scheduler())
+
+      if not ok then
+        error(err)
+      end
+    end)
+  )
+
+  it(
+    "post_open stops the spinner on both the success and error paths",
+    test_utils.async_test(function()
+      local repo = test_utils.make_repo()
+
+      -- Success path: after a normal open, the timer must be stopped and
+      -- the hrtime anchor cleared so a later refresh starts clean.
+      local view
+      local ok, err = pcall(function()
+        view = WorktreeOverviewView({ adapter = make_adapter(repo) })
+        view:open()
+        assert.is_nil(view._spinner_timer)
+        assert.is_nil(view._spinner_start)
+      end)
+
+      test_utils.close_view(view)
+
+      if not ok then
+        test_utils.cleanup_repo(repo)
+        async.await(async.scheduler())
+        error(err)
+      end
+
+      -- Error path: swap `refresh` for one that throws, and verify that
+      -- `post_open`'s pcall still runs `_stop_spinner` before re-raising.
+      local errored_view
+      local err_ok, err_err = pcall(function()
+        errored_view = WorktreeOverviewView({ adapter = make_adapter(repo) })
+        errored_view.refresh = function()
+          error("synthetic refresh failure")
+        end
+        local open_ok, open_err = pcall(function()
+          errored_view:open()
+        end)
+        assert.is_false(open_ok)
+        assert.is_truthy(tostring(open_err):find("synthetic refresh failure", 1, true))
+        assert.is_nil(errored_view._spinner_timer)
+        assert.is_nil(errored_view._spinner_start)
+      end)
+
+      test_utils.close_view(errored_view)
+      test_utils.cleanup_repo(repo)
+      async.await(async.scheduler())
+
+      if not err_ok then
+        error(err_err)
+      end
+    end)
+  )
 end)
