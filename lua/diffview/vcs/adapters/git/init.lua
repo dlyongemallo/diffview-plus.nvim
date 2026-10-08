@@ -14,6 +14,7 @@ local arg_parser = require("diffview.arg_parser")
 local async = require("diffview.async")
 local config = require("diffview.config")
 local git_parser = require("diffview.vcs.adapters.git.parser")
+local git_worktree = require("diffview.vcs.adapters.git.worktree")
 local lazy = require("diffview.lazy")
 local oop = require("diffview.oop")
 local utils = require("diffview.utils")
@@ -379,6 +380,22 @@ function GitAdapter:get_dir(path)
     return nil
   end
   return normalize_cygwin_path(out[1] and vim.trim(out[1]))
+end
+
+---List every worktree linked to this repository.
+---Runs `git worktree list --porcelain` from the adapter's toplevel; the
+---output enumerates every linked worktree (including the main one and any
+---bare repo) regardless of which worktree the adapter is attached to.
+---@return GitAdapter.WorktreeEntry[]? entries # Nil only if the command failed.
+function GitAdapter:worktree_list()
+  local out, code = self:exec_sync({ "worktree", "list", "--porcelain" }, {
+    cwd = self.ctx.toplevel,
+    log_opt = { label = "GitAdapter:worktree_list()" },
+  })
+  if code ~= 0 then
+    return nil
+  end
+  return git_worktree.parse_worktree_list(out)
 end
 
 ---Verify that a given git rev is valid.
