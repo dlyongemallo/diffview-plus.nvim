@@ -172,7 +172,7 @@ local conflict_keymaps = {
 ---@field show_root_path? boolean Show repository root path in panel headers.
 ---@field watch_index? boolean Update views and index buffers when the git index changes.
 ---@field hide_merge_artifacts? boolean Hide merge artifact files (*.orig, *.BACKUP.*, *.BASE.*, *.LOCAL.*, *.REMOTE.*).
----@field auto_close_on_empty? boolean Close diffview when the last file is staged/resolved.
+---@field auto_close_on_empty? boolean Close diffview when it holds no files, and decline to open one that would be empty.
 ---@field wrap_entries? boolean Wrap around when navigating past the first/last file entry.
 ---@field large_file_threshold? integer Line count above which treesitter is disabled on non-LOCAL diff buffers. 0 disables this behaviour.
 ---@field diffopt? table Override `diffopt` while diffview is open. Restored on close.
@@ -206,7 +206,7 @@ M.defaults = {
   show_root_path = true, -- Show repository root path in panel headers.
   watch_index = true,
   hide_merge_artifacts = false, -- Hide merge artifact files (*.orig, *.BACKUP.*, etc.)
-  auto_close_on_empty = false, -- Automatically close diffview when the last file is staged/resolved.
+  auto_close_on_empty = false, -- Automatically close diffview when it holds no files.
   wrap_entries = true, -- Wrap around when navigating past the first/last file entry.
   -- Line count threshold for disabling treesitter highlighting on non-LOCAL
   -- revision buffers. Set to 0 to disable this behaviour.

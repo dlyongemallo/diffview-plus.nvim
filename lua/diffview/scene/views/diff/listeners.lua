@@ -35,6 +35,11 @@ local function find_visible_neighbor(files, anchor, excluded)
   end
 end
 
+---Trigger context for the `auto_close_on_empty` policy.
+---@class AutoCloseOpts
+---@field silent? boolean Abort without reporting unsaved stage edits.
+---@field conflict_resolved? boolean The user just resolved a merge conflict.
+
 ---Move the cursor to the panel's repository path when filtering leaves no
 ---selectable file rows.
 ---@param panel FilePanel
@@ -46,65 +51,78 @@ end
 
 ---@param view DiffView
 return function(view)
-  -- Re-arm `auto_close_on_empty` retry after a deferred close. Set when the
-  -- guarded close aborts (dirty stage buffer); cleared when the retry either
-  -- succeeds or no longer applies (working/conflicting non-empty).
-  local auto_close_pending = false
+  -- Opts of a guarded `auto_close_on_empty` close that aborted on a dirty
+  -- stage buffer, kept so the next stage save retries the same gate. `nil`
+  -- while no close is pending.
+  ---@type AutoCloseOpts?
+  local auto_close_pending = nil
   -- Latched once this view surfaces a conflict, so index-less adapters (where
   -- a resolved file lands in `working` rather than leaving the view) only
   -- auto-close after a merge was actually resolved here.
   local had_conflicts = false
 
-  ---Run the `auto_close_on_empty` policy. Closes the view when the
-  ---`conflicting` bucket is empty AND stage buffers are clean AND either:
-  ---  (a) staging adapters (git/hg): the `working` bucket is also empty,
-  ---      i.e., every change has been staged; or
-  ---  (b) index-less adapters (jj): the view previously surfaced
-  ---      conflicts, i.e., a merge was actually resolved here (a resolved
-  ---      file stays in `working` as the resolution artifact, so an
-  ---      empty `working` bucket cannot be the gate).
-  ---If the guarded close aborts, set the retry flag so the next stage
-  ---save (via `buf_write_post`) re-evaluates.
+  ---Run the `auto_close_on_empty` policy. Closes the view when stage buffers
+  ---are clean AND either:
+  ---  (a) the view holds no files at all. Staged entries are still shown, so
+  ---      they keep the view open; or
+  ---  (b) `opts.conflict_resolved` on an index-less adapter (jj): the view
+  ---      previously surfaced conflicts, i.e. a merge was actually resolved
+  ---      here. A resolved file stays in `working` as the resolution
+  ---      artifact, so emptiness cannot be the gate for that trigger. Every
+  ---      other trigger gates on emptiness for jj too, since the latch stays
+  ---      set for the life of the view and would otherwise close it on an
+  ---      unrelated refresh.
+  ---If the guarded close aborts, keep `opts` as the retry so the next stage
+  ---save (via `buf_write_post`) re-evaluates the same gate.
   ---
-  ---When `silent` is true, the dirty-stage gate is pre-checked and the close
-  ---call is skipped if it would fail. The BufWritePost retry path uses this
-  ---to avoid re-warning on every save: the autocmd fires globally without
-  ---buffer context, so unrelated saves would otherwise repeatedly trip the
-  ---gate while a stage buffer stays dirty.
-  ---@param silent? boolean
-  local function maybe_auto_close(silent)
+  ---`opts.silent` is for triggers that fire outside the user's control: a
+  ---refresh, or the BufWritePost retry, which runs on every save in the
+  ---session without buffer context. Those would otherwise report the unsaved
+  ---stage edits again on each one while a stage buffer stays dirty.
+  ---@param opts? AutoCloseOpts
+  local function maybe_auto_close(opts)
+    opts = opts or {}
+
     if not config.get_config().auto_close_on_empty then
-      auto_close_pending = false
+      auto_close_pending = nil
       return
     end
     if #view.files.conflicting ~= 0 then
-      auto_close_pending = false
+      auto_close_pending = nil
       return
     end
-    -- See docstring: staging adapters gate on `working` empty; index-less
-    -- adapters gate on `had_conflicts` so an unrelated diff view doesn't
-    -- auto-close on the first save.
-    if view.adapter:has_staging() then
-      if #view.files.working ~= 0 then
-        auto_close_pending = false
-        return
-      end
-    else
+    -- See docstring: a conflict resolved on an index-less adapter gates on
+    -- `had_conflicts`, so that an unrelated diff view doesn't auto-close on
+    -- the first save; everything else gates on emptiness.
+    if opts.conflict_resolved and not view.adapter:has_staging() then
       if not had_conflicts then
-        auto_close_pending = false
+        auto_close_pending = nil
         return
       end
-    end
-    if silent and #view:_modified_stage_paths() > 0 then
-      auto_close_pending = true
+    elseif view.files:len() ~= 0 then
+      auto_close_pending = nil
       return
     end
-    if view:close({ force = false }) ~= false then
-      auto_close_pending = false
+    if view:close({ force = false, silent = opts.silent }) ~= false then
+      auto_close_pending = nil
       lib.dispose_view(view)
     else
-      auto_close_pending = true
+      auto_close_pending = opts
     end
+  end
+
+  ---Run `maybe_auto_close` once no `set_file` is in flight. Tearing down the
+  ---layout while one is running crashes `sync_scroll` on the freed window ids.
+  ---@param opts? AutoCloseOpts
+  local function close_when_idle(opts)
+    local in_flight = view:set_file_in_flight()
+    if in_flight and not in_flight:is_done() then
+      vim.defer_fn(function()
+        close_when_idle(opts)
+      end, 20)
+      return
+    end
+    maybe_auto_close(opts)
   end
 
   return {
@@ -144,12 +162,12 @@ return function(view)
       -- stage buffer is finally saved.
       --
       -- The retry must run *after* the `update_files` refresh so a save that
-      -- reintroduces working/conflicting entries (e.g. user edited a tracked
-      -- file) is reflected in `view.files` before the gate is re-evaluated;
-      -- otherwise the close would fire against pre-refresh state.
+      -- reintroduces file entries (e.g. user edited a tracked file) is
+      -- reflected in `view.files` before the gate is re-evaluated; otherwise
+      -- the close would fire against pre-refresh state.
       local function retry_auto_close()
         if auto_close_pending then
-          maybe_auto_close(true)
+          maybe_auto_close(vim.tbl_extend("force", auto_close_pending, { silent = true }))
         end
       end
 
@@ -198,13 +216,31 @@ return function(view)
     end,
     ---@diagnostic disable-next-line: unused-local
     files_updated = function(_, files)
+      local was_initialized = view.initialized
       view.initialized = true
       -- File entries may be replaced on update; prune stale selections.
       view.panel:prune_selections()
-      -- Latch for the index-less branch of `maybe_auto_close`.
+      -- Latch for the index-less conflict-resolved branch of `maybe_auto_close`.
       if #view.files.conflicting > 0 then
         had_conflicts = true
       end
+
+      if not config.get_config().auto_close_on_empty then
+        return
+      end
+
+      -- The first update is the earliest point at which an empty comparison
+      -- is known, so that is where it is reported.
+      if not was_initialized and view.files:len() == 0 then
+        utils.info("Nothing to display.")
+      end
+
+      -- Any update can empty the view, e.g. a commit landing while it is
+      -- open. The update is still mid-flight here, so the close waits for it
+      -- to settle.
+      vim.schedule(function()
+        close_when_idle({ silent = true })
+      end)
     end,
     close = function()
       if view.panel:is_focused() then
@@ -548,19 +584,7 @@ return function(view)
               end
             end
             view.panel:highlight_cur_file()
-            -- Wait for any in-flight `set_file` (`update_files` may schedule
-            -- one) to finish before letting `maybe_auto_close` run: tearing
-            -- down the layout mid-flight crashes `sync_scroll` on the freed
-            -- window ids.
-            local function close_when_idle()
-              local in_flight = view:set_file_in_flight()
-              if in_flight and not in_flight:is_done() then
-                vim.defer_fn(close_when_idle, 20)
-                return
-              end
-              maybe_auto_close()
-            end
-            close_when_idle()
+            close_when_idle({ conflict_resolved = true })
           end)
         )
         view.emitter:emit(EventName.FILES_STAGED, view)
