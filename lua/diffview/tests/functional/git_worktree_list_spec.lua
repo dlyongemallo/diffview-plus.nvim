@@ -86,3 +86,52 @@ describe("diffview.vcs.adapters.git GitAdapter:worktree_list", function()
     end)
   )
 end)
+
+describe("diffview.vcs.adapters.git GitAdapter:resolve_default_base", function()
+  it(
+    "returns the local default branch when no remote exists",
+    test_utils.async_test(function()
+      local repo = test_utils.make_repo()
+      local adapter = make_adapter(repo)
+
+      local ok, err = pcall(function()
+        local head_branch = run({ "git", "rev-parse", "--abbrev-ref", "HEAD" }, repo)
+        local base = adapter:resolve_default_base()
+        -- `make_repo` only ever leaves `main` or `master` behind, both of
+        -- which the resolver's priority list covers.
+        assert.equals(head_branch, base)
+      end)
+
+      test_utils.cleanup_repo(repo)
+      async.await(async.scheduler())
+
+      if not ok then
+        error(err)
+      end
+    end)
+  )
+
+  it(
+    "returns nil when no conventional default branch is reachable",
+    test_utils.async_test(function()
+      local repo = test_utils.make_repo()
+
+      local ok, err = pcall(function()
+        -- Move the only ref off `main`/`master` so none of the resolver's
+        -- candidates can resolve to a commit.
+        run({ "git", "branch", "-m", "feature/only" }, repo)
+
+        local adapter = make_adapter(repo)
+        local base = adapter:resolve_default_base()
+        assert.is_nil(base)
+      end)
+
+      test_utils.cleanup_repo(repo)
+      async.await(async.scheduler())
+
+      if not ok then
+        error(err)
+      end
+    end)
+  )
+end)

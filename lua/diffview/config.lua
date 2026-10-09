@@ -157,6 +157,7 @@ local conflict_keymaps = {
 ---@field default_args DiffviewDefaultArgs
 ---@field hooks DiffviewHooks
 ---@field keymaps DiffviewKeymapsConfig
+---@field worktree_overview DiffviewWorktreeOverviewConfig
 
 ---@class DiffviewConfig.user
 ---@field diff_binaries? boolean Show diffs for binary files.
@@ -189,6 +190,7 @@ local conflict_keymaps = {
 ---@field default_args? DiffviewDefaultArgs.user Default args prepended to the arg-list for `:DiffviewOpen` / `:DiffviewFileHistory`.
 ---@field hooks? DiffviewHooks Event hooks. See `|diffview-config-hooks|`.
 ---@field keymaps? DiffviewKeymapsConfig.user Keymap overrides; merged with defaults unless `disable_defaults` is true.
+---@field worktree_overview? DiffviewWorktreeOverviewConfig.user Behaviour of `:DiffviewWorktreeOverview`.
 
 ---@type DiffviewConfig
 M.defaults = {
@@ -635,6 +637,18 @@ M.defaults = {
     DiffviewFileHistory = {},
   },
 
+  ---@class DiffviewWorktreeOverviewConfig
+  ---@field base? string
+  ---@field include_bare boolean
+
+  ---@class DiffviewWorktreeOverviewConfig.user
+  ---@field base? string Comparison base used by `:DiffviewWorktreeOverview` for every worktree's stats and for the DiffView it opens on `<CR>`. Nil asks the adapter to resolve a sensible default per worktree (`origin/HEAD` through `master`).
+  ---@field include_bare? boolean Render bare worktrees alongside working ones. Off by default; stats are never collected for a bare worktree.
+  worktree_overview = {
+    base = nil,
+    include_bare = false,
+  },
+
   ---@class DiffviewDiffBufCtx
   ---@field symbol string Layout-window symbol ("a"|"b"|"c"|"d").
   ---@field layout_name string Concrete layout, e.g. "diff2_horizontal".
@@ -777,9 +791,16 @@ M.defaults = {
       { "n", "<esc>", actions.close,  { desc = "Close commit log" } },
     },
     worktree_overview = {
-      { "n", "q",     actions.close,                     { desc = "Close the worktree overview" } },
-      { "n", "R",     actions.refresh_files,             { desc = "Re-scan worktrees and stats" } },
-      { "n", "<CR>",  actions.worktree_overview_enter,   { desc = "Open DiffView for the selected worktree" } },
+      { "n", "j",              actions.next_entry,                { desc = "Bring the cursor to the next worktree" } },
+      { "n", "<down>",         actions.next_entry,                { desc = "Bring the cursor to the next worktree" } },
+      { "n", "k",              actions.prev_entry,                { desc = "Bring the cursor to the previous worktree" } },
+      { "n", "<up>",           actions.prev_entry,                { desc = "Bring the cursor to the previous worktree" } },
+      { "n", "R",              actions.refresh_files,             { desc = "Re-scan worktrees and stats" } },
+      { "n", "<CR>",           actions.worktree_overview_enter,   { desc = "Open DiffView for the selected worktree" } },
+      { "n", "o",              actions.worktree_overview_enter,   { desc = "Open DiffView for the selected worktree" } },
+      { "n", "l",              actions.worktree_overview_enter,   { desc = "Open DiffView for the selected worktree" } },
+      { "n", "<2-LeftMouse>",  actions.worktree_overview_enter,   { desc = "Open DiffView for the selected worktree" } },
+      { "n", "g?",             actions.help("worktree_overview"), { desc = "Open the help panel" } },
     },
   },
 }

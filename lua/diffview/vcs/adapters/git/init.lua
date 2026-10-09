@@ -398,6 +398,180 @@ function GitAdapter:worktree_list()
   return git_worktree.parse_worktree_list(out)
 end
 
+---The priority list of revs `resolve_default_base` considers.
+GitAdapter.DEFAULT_BASE_CANDIDATES = {
+  "origin/HEAD",
+  "origin/main",
+  "origin/master",
+  "main",
+  "master",
+}
+
+---Build the (unstarted) `rev-parse` probes `resolve_default_base` would run
+---and a parser that returns the first candidate whose probe exits 0. Lets a
+---caller batch base-resolution across many worktrees under one event-loop
+---pass. Probes log at debug level so expected misses stay quiet.
+---@param toplevel string # The worktree root to probe in.
+---@return diffview.Job[] jobs
+---@return fun(): string? parse
+function GitAdapter:build_default_base_probe_jobs(toplevel)
+  local jobs = {}
+  for _, rev in ipairs(GitAdapter.DEFAULT_BASE_CANDIDATES) do
+    jobs[#jobs + 1] = Job({
+      command = self:bin(),
+      args = utils.vec_join(self:args(), "rev-parse", "--verify", "--quiet", rev .. "^{commit}"),
+      cwd = toplevel,
+      log_opt = { label = "GitAdapter:build_default_base_probe_jobs", debug_level = 1 },
+    })
+  end
+
+  local function parse()
+    for i, j in ipairs(jobs) do
+      if j.code == 0 then
+        return GitAdapter.DEFAULT_BASE_CANDIDATES[i]
+      end
+    end
+    return nil
+  end
+
+  return jobs, parse
+end
+
+---Pick a reasonable comparison base for "what has this branch added".
+---Returns the first candidate from `DEFAULT_BASE_CANDIDATES` whose
+---`rev-parse` resolves to a commit, or nil when none exist (an orphan
+---branch, or a repo with no conventional default branch).
+---@return string? rev
+function GitAdapter:resolve_default_base()
+  local jobs, parse = self:build_default_base_probe_jobs(self.ctx.toplevel)
+  for _, j in ipairs(jobs) do
+    j:sync()
+  end
+  return parse()
+end
+
+---@class GitAdapter.WorktreeStats
+---@field base? string # The resolved comparison base, or nil if none.
+---@field ahead integer # Commits reachable from HEAD but not from `base`.
+---@field behind integer # Commits reachable from `base` but not from HEAD.
+---@field changed_files integer # From `git diff --shortstat <base>...HEAD`.
+---@field insertions integer
+---@field deletions integer
+---@field staged integer # Index-vs-HEAD changes from `git status --porcelain`.
+---@field unstaged integer # Worktree-vs-index changes.
+---@field untracked integer
+
+---Build the (unstarted) `Job`s that `worktree_stats` would run and a parser
+---that reads their outputs into a `WorktreeStats`. Returned jobs are not
+---started so callers can batch probes across many worktrees under one
+---event-loop pass (e.g., `Job.start_all` + per-job `sync()`, or `MultiJob`).
+---When `base` is nil the branch probes are omitted and the parser leaves
+---those counts at zero.
+---@param toplevel string # The worktree root to run the probes in.
+---@param base? string # Resolved base rev (see `resolve_default_base`), or nil.
+---@return diffview.Job[] jobs
+---@return fun(): GitAdapter.WorktreeStats parse
+function GitAdapter:build_stats_probe_jobs(toplevel, base)
+  local jobs = {}
+  local rev_list_job, diff_job
+
+  if base then
+    local range = base .. "...HEAD"
+    rev_list_job = Job({
+      command = self:bin(),
+      args = utils.vec_join(self:args(), "rev-list", "--left-right", "--count", range),
+      cwd = toplevel,
+      log_opt = { label = "GitAdapter:build_stats_probe_jobs:rev-list" },
+    })
+    diff_job = Job({
+      command = self:bin(),
+      args = utils.vec_join(self:args(), "diff", "--shortstat", range),
+      cwd = toplevel,
+      log_opt = { label = "GitAdapter:build_stats_probe_jobs:diff" },
+    })
+    jobs[#jobs + 1] = rev_list_job
+    jobs[#jobs + 1] = diff_job
+  end
+
+  local status_job = Job({
+    command = self:bin(),
+    args = utils.vec_join(self:args(), "status", "--porcelain=v1", "-uall"),
+    cwd = toplevel,
+    log_opt = { label = "GitAdapter:build_stats_probe_jobs:status" },
+  })
+  jobs[#jobs + 1] = status_job
+
+  local function parse()
+    local stats = {
+      base = base,
+      ahead = 0,
+      behind = 0,
+      changed_files = 0,
+      insertions = 0,
+      deletions = 0,
+      staged = 0,
+      unstaged = 0,
+      untracked = 0,
+    }
+
+    -- `rev-list --left-right --count A...B` prints "<left>\t<right>", where
+    -- "left" is reachable from A but not B. With range = `base...HEAD` that
+    -- maps to `<behind>\t<ahead>`.
+    if rev_list_job and rev_list_job.code == 0 and rev_list_job.stdout[1] then
+      local behind, ahead = rev_list_job.stdout[1]:match("(%d+)%s+(%d+)")
+      stats.behind = tonumber(behind) or 0
+      stats.ahead = tonumber(ahead) or 0
+    end
+
+    -- Shortstat prints e.g. " 3 files changed, 42 insertions(+), 7 deletions(-)".
+    -- When no file changed git prints nothing, so matches staying zero is correct.
+    if diff_job and diff_job.code == 0 and diff_job.stdout[1] then
+      stats.changed_files = tonumber(diff_job.stdout[1]:match("(%d+) files? changed")) or 0
+      stats.insertions = tonumber(diff_job.stdout[1]:match("(%d+) insertions?%(%+%)")) or 0
+      stats.deletions = tonumber(diff_job.stdout[1]:match("(%d+) deletions?%(%-%)")) or 0
+    end
+
+    -- Porcelain v1: each line's first two chars are "XY <path>". X is the
+    -- index-vs-HEAD status, Y is worktree-vs-index. "??" means untracked.
+    if status_job.code == 0 then
+      for _, line in ipairs(status_job.stdout) do
+        if #line >= 2 then
+          local xy = line:sub(1, 2)
+          if xy == "??" then
+            stats.untracked = stats.untracked + 1
+          else
+            local x, y = xy:sub(1, 1), xy:sub(2, 2)
+            if x ~= " " and x ~= "?" then
+              stats.staged = stats.staged + 1
+            end
+            if y ~= " " and y ~= "?" then
+              stats.unstaged = stats.unstaged + 1
+            end
+          end
+        end
+      end
+    end
+
+    return stats
+  end
+
+  return jobs, parse
+end
+
+---Collect branch-vs-base and working-tree stats for the adapter's worktree.
+---Runs the probes from `build_stats_probe_jobs` sequentially; for batching
+---across many worktrees in parallel, callers should pull the jobs directly
+---and use `Job.start_all` or `MultiJob`.
+---@return GitAdapter.WorktreeStats
+function GitAdapter:worktree_stats()
+  local base = self:resolve_default_base()
+  local jobs, parse = self:build_stats_probe_jobs(self.ctx.toplevel, base)
+  for _, j in ipairs(jobs) do
+    j:sync()
+  end
+  return parse()
+end
+
 ---Verify that a given git rev is valid.
 ---@param rev_arg string
 ---@return boolean ok, string[] output

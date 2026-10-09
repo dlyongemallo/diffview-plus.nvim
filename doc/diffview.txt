@@ -601,14 +601,69 @@ COMMANDS                                        *diffview-commands*
                                                 *:DiffviewWorktreeOverview*
 :DiffviewWorktreeOverview
                         Open the cross-worktree overview: a dedicated
-                        tabpage listing every linked git worktree.
+                        tabpage listing every linked git worktree. Each
+                        row shows the branch, ahead/behind counts
+                        against a resolved base, diff-shortstat totals,
+                        and a staged/unstaged/untracked trio. See
+                        |diffview-worktree-overview-columns| for a
+                        column legend.
 
                         Default keymaps on the overview buffer: >
-                            q      close the overview
-                            R      re-scan worktrees
-                            <CR>   open DiffView for the selected worktree
+                            `j` `<down>`          next worktree
+                            `k` `<up>`            previous worktree
+                            `R`               re-scan worktrees
+                            `<CR>` `o` `l`        open DiffView for the selected worktree
+                            `<2-LeftMouse>`   same (mouse)
+                            `g?`              open the help panel (lists every keymap)
 <
+                        Close the overview with |:DiffviewClose| (same as
+                        every other diffview tab).
                         Git only.
+
+                                                *diffview-worktree-overview-columns*
+Column legend ~
+                        Each non-bare row renders these columns, left
+                        to right. Numeric columns right-align to the
+                        widest value in the batch.
+
+                            `*`             Marker for the worktree the
+                                           overview was launched from.
+                                           Omitted when launched outside
+                                           any worktree (e.g., from a
+                                           bare repo).
+                            branch         Branch name, or
+                                           `(detached <short-sha>)` for
+                                           a detached HEAD, or `(bare)`
+                                           for bare rows.
+                            status         Optional column populated by
+                                           companion plugins (see
+                                           |diffview-worktree-overview-hooks|).
+                                           Omitted when no provider
+                                           registers.
+                            `↑N` `↓N`         Commits ahead / behind the
+                                           resolved comparison base
+                                           (`origin/HEAD` with
+                                           fallbacks; see `base` in
+                                           |diffview-config-worktree_overview|).
+                            `Nf`            Files changed in `base...HEAD`
+                                           per `git diff --shortstat`.
+                            `+N` `-N`         Insertion / deletion counts
+                                           from the same shortstat.
+                            `Ns` `Nu` `N?`     Dirty trio from
+                                           `git status --porcelain`:
+                                           staged (index-vs-HEAD),
+                                           unstaged (worktree-vs-index),
+                                           and untracked file counts.
+                                           The whole trio is omitted
+                                           when every row in the batch
+                                           is clean; when some rows are
+                                           dirty the trio shows for all
+                                           of them, with zero components
+                                           dimmed.
+                            path           Worktree root, with the
+                                           common parent directory of
+                                           every row stripped so the
+                                           rows read as a tidy list.
 
                                                 *:DiffviewLog*
 :DiffviewLog            Open the debug log.
@@ -1516,6 +1571,69 @@ default_args                                    *diffview-config-default_args*
                   DiffviewFileHistory = { "--base=LOCAL" },
                 }
 <
+
+worktree_overview                               *diffview-config-worktree_overview*
+        Type: `table`, Default: >lua
+                worktree_overview = {
+                  base = nil,
+                  include_bare = false,
+                }
+<
+        Behaviour of |:DiffviewWorktreeOverview|.
+
+        Fields: ~
+            {base} (`string?`)
+                Comparison rev used for every worktree's stats and for the
+                DiffView `<CR>` opens. Nil asks the adapter to resolve a
+                sensible default per worktree (`origin/HEAD` through
+                `master`).
+
+            {include_bare} (`boolean`)
+                Render bare worktrees in the overview. Off by default.
+                Stats are never collected for a bare worktree, and `<CR>`
+                continues to reject them regardless.
+
+                                                *diffview-worktree-overview-hooks*
+        Companion plugins can decorate the overview and react to its
+        lifecycle through two surfaces:
+
+        1. A status-column provider registry on the view module. Each
+           registered function is called per entry on render; non-empty
+           returns are joined with a space and rendered in a dedicated
+           column. Errors raised by a provider are swallowed. >lua
+
+           local overview = require(
+             "diffview.scene.views.worktree_overview.worktree_overview_view"
+           )
+           overview.register_status_provider(function(entry)
+             return my_agent_bridge.state_for(entry.path)
+           end)
+<
+        2. Three events on `DiffviewGlobal.emitter`:
+
+              `worktree_overview_opened(view)`
+                      Fires once in `post_open`.
+
+              `worktree_overview_refreshed(view, entries)`
+                      Fires after every refresh.
+                      `entries` is the full list, bare included.
+
+              `worktree_overview_entered(view, entry)`
+                      Fires right before `<CR>` dispatches to a scoped
+                      DiffView.
+
+        3. One request-event on `DiffviewGlobal.emitter`, listened to
+           by every open overview view:
+
+              `refresh_worktree_overview_status`
+                      Emit this to ask every open overview to rerun
+                      its registered status providers and rerender.
+                      Does NOT re-query git (no worktree list, no
+                      stats batch), so it is cheap enough to fire on
+                      external events (e.g., a sidekick session
+                      attached). The companion plugin is responsible
+                      for invalidating its own cache first if its
+                      provider is cache-backed.
 
 hooks                                           *diffview-config-hooks*
         Type: `table<string, function>`, Default: `{}`

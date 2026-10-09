@@ -5,6 +5,24 @@ CHANGELOG
 
 NOTE: Breaking changes and notable feature additions are listed here.
 
+                                                *diffview.changelog-worktree-overview*
+
+The `:DiffviewWorktreeOverview` command opens a tabpage listing every
+linked git worktree (see |:DiffviewWorktreeOverview|). Each row shows
+the branch name, ahead/behind counts against a resolved default base
+(`origin/HEAD` with fallbacks to `origin/main`, `origin/master`,
+`main`, `master`; override via |diffview-config-worktree_overview|),
+diff-shortstat totals, and a staged/unstaged/untracked trio. `<CR>` on
+a row opens a `:DiffviewOpen` scoped to that worktree against the same
+base.
+
+Bare worktrees are hidden by default; set `include_bare = true` under
+`worktree_overview` to show them.
+
+Companion plugins can register extra status-column providers to annotate
+rows with external state (for example, an attached coding-agent session
+per worktree); see |diffview-worktree-overview-hooks|.
+
                                                 *diffview.changelog-session-restoration*
 
 Open `:DiffviewOpen` and `:DiffviewFileHistory` views now survive a
