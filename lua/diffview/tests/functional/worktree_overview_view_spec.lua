@@ -62,15 +62,12 @@ describe("diffview.scene.views.worktree_overview WorktreeOverviewView", function
         view = WorktreeOverviewView({ adapter = make_adapter(repo) })
         view:open()
 
-        local lhs = { ["q"] = false, ["R"] = false, ["<CR>"] = false }
+        local lhs = { ["R"] = false, ["<CR>"] = false }
         for _, m in ipairs(vim.api.nvim_buf_get_keymap(view.bufnr, "n")) do
           -- `nvim_buf_get_keymap` may return `<CR>` normalised to the
           -- literal "\r" in either `m.lhs` or `m.lhsraw` depending on the
           -- Neovim version; compare every spelling so this test does not
           -- depend on which form nvim is in the mood for.
-          if m.lhs == "q" or m.lhsraw == "q" then
-            lhs["q"] = true
-          end
           if m.lhs == "R" or m.lhsraw == "R" then
             lhs["R"] = true
           end
@@ -78,7 +75,6 @@ describe("diffview.scene.views.worktree_overview WorktreeOverviewView", function
             lhs["<CR>"] = true
           end
         end
-        assert.is_true(lhs["q"])
         assert.is_true(lhs["R"])
         assert.is_true(lhs["<CR>"])
       end)
