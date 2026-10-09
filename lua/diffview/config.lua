@@ -665,6 +665,7 @@ M.defaults = {
   ---@field option_panel DiffviewKeymapEntry[]
   ---@field help_panel DiffviewKeymapEntry[]
   ---@field commit_log_panel DiffviewKeymapEntry[]
+  ---@field worktree_overview DiffviewKeymapEntry[]
 
   ---@class DiffviewKeymapsConfig.user
   ---@field disable_defaults? boolean
@@ -679,6 +680,7 @@ M.defaults = {
   ---@field option_panel? DiffviewKeymapEntry[]
   ---@field help_panel? DiffviewKeymapEntry[]
   ---@field commit_log_panel? DiffviewKeymapEntry[]
+  ---@field worktree_overview? DiffviewKeymapEntry[]
   -- Tabularize formatting pattern: `\v(\"[^"]{-}\",\ze(\s*)actions)|actions\.\w+(\(.{-}\))?,?|\{\ desc\ \=`
   keymaps = {
     disable_defaults = false, -- Disable the default keymaps
@@ -773,6 +775,11 @@ M.defaults = {
     commit_log_panel = {
       { "n", "q",     actions.close,  { desc = "Close commit log" } },
       { "n", "<esc>", actions.close,  { desc = "Close commit log" } },
+    },
+    worktree_overview = {
+      { "n", "q",     actions.close,                     { desc = "Close the worktree overview" } },
+      { "n", "R",     actions.refresh_files,             { desc = "Re-scan worktrees and stats" } },
+      { "n", "<CR>",  actions.worktree_overview_enter,   { desc = "Open DiffView for the selected worktree" } },
     },
   },
 }

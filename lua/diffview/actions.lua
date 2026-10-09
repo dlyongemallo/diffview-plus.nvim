@@ -77,6 +77,7 @@ local pl = lazy.access(utils, "path") --[[@as PathLib ]]
 ---@field toggle_stage_entry fun()
 ---@field toggle_untracked fun()
 ---@field unstage_all fun()
+---@field worktree_overview_enter fun()
 ---@field conflict_choose fun(target: DiffviewConflictTarget): fun()
 ---@field conflict_choose_all fun(target: DiffviewConflictTarget): AsyncFunc
 ---@field conflict_choose_side fun(target: DiffviewConflictSideTarget): AsyncFunc
@@ -1279,6 +1280,7 @@ local action_names = {
   "toggle_untracked",
   "toggle_hide_selected",
   "unstage_all",
+  "worktree_overview_enter",
 }
 
 ---Applicability tags for emit-stub actions. Listed here (rather than at each
