@@ -246,6 +246,7 @@ describe("diffview.scene.views.worktree_overview hooks", function()
       local ok, err = pcall(function()
         view = WorktreeOverviewView({ adapter = make_adapter(repo) })
         view:open()
+        async.await(async.schedule_now())
 
         -- Let the deferred provider resolution fire so the status column
         -- is populated before we inspect the rendered buffer.
@@ -301,6 +302,104 @@ describe("diffview.scene.views.worktree_overview hooks", function()
 
       config.user_emitter:off(wrapper, "worktree_overview_opened")
       test_utils.close_view(view)
+      test_utils.cleanup_repo(repo)
+      async.await(async.scheduler())
+
+      if not ok then
+        error(err)
+      end
+    end)
+  )
+
+  it(
+    "`refresh_worktree_overview_status` rebuilds the status column without re-querying git",
+    test_utils.async_test(function()
+      local repo = test_utils.make_repo()
+
+      local view
+      local provider_output = "first"
+      local provider_calls = 0
+      local provider = function()
+        provider_calls = provider_calls + 1
+        return provider_output
+      end
+
+      local ok, err = pcall(function()
+        overview.register_status_provider(provider)
+        view = WorktreeOverviewView({ adapter = make_adapter(repo) })
+        view:open()
+        async.await(async.schedule_now())
+
+        local initial_calls = provider_calls
+        -- The source of truth that `refresh_status` must NOT re-query:
+        -- stub the adapter's worktree_list to blow up if called again.
+        view.adapter.worktree_list = function()
+          error("worktree_list must not be called by refresh_status")
+        end
+
+        -- Flip the provider's output and request a status-only refresh.
+        provider_output = "second"
+        DiffviewGlobal.emitter:emit("refresh_worktree_overview_status")
+        async.await(async.schedule_now())
+
+        -- Provider ran again, worktree_list did not, buffer shows new value.
+        assert.is_true(provider_calls > initial_calls)
+        local lines = vim.api.nvim_buf_get_lines(view.bufnr, 0, -1, false)
+        local any_new
+        for _, line in ipairs(lines) do
+          if line:find("second", 1, true) then
+            any_new = true
+            break
+          end
+        end
+        assert.is_true(any_new)
+      end)
+
+      overview.clear_status_providers()
+      test_utils.close_view(view)
+      test_utils.cleanup_repo(repo)
+      async.await(async.scheduler())
+
+      if not ok then
+        error(err)
+      end
+    end)
+  )
+
+  it(
+    "unsubscribes from `refresh_worktree_overview_status` when the view closes",
+    test_utils.async_test(function()
+      local repo = test_utils.make_repo()
+
+      local view
+      local provider_calls = 0
+      local provider = function()
+        provider_calls = provider_calls + 1
+        return "x"
+      end
+
+      local ok, err = pcall(function()
+        overview.register_status_provider(provider)
+        view = WorktreeOverviewView({ adapter = make_adapter(repo) })
+        view:open()
+        async.await(async.schedule_now())
+
+        local calls_before_close = provider_calls
+        test_utils.close_view(view)
+        view = nil
+
+        -- With no view listening, firing the event should not reach the
+        -- provider at all. Any invocation here would indicate the view's
+        -- `close` failed to detach the global-emitter subscription.
+        DiffviewGlobal.emitter:emit("refresh_worktree_overview_status")
+        async.await(async.schedule_now())
+        assert.equals(calls_before_close, provider_calls)
+      end)
+
+      overview.clear_status_providers()
+      if view then
+        test_utils.close_view(view)
+      end
       test_utils.cleanup_repo(repo)
       async.await(async.scheduler())
 

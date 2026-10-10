@@ -91,6 +91,7 @@ end
 ---@field winid integer?
 ---@field render_data RenderData?
 ---@field _status_by_path? table<string, string> # `refresh` resolves each row's status column into this map so `render` reads strings instead of calling providers in its hot path.
+---@field _on_status_refresh? fun() # Handler we installed on `DiffviewGlobal.emitter` for `refresh_worktree_overview_status`.
 ---@field _spinner_timer uv_timer_t?
 ---@field _spinner_start? integer # hrtime nanoseconds at the start of this spin.
 ---@field _spinner_frame? integer # Next frame index to paint.
@@ -135,6 +136,45 @@ function WorktreeOverviewView:init_event_listeners()
   end)
   self.emitter:on("prev_entry", function()
     self:move_cursor(-vim.v.count1)
+  end)
+  -- Companion plugins (notably `diffview-plus-agents`) emit this on the
+  -- global emitter when a provider's underlying state changes (e.g., a
+  -- sidekick session was attached or detached, or the user focused the
+  -- overview buffer and we want to recheck). It is a status-only refresh:
+  -- no git calls, no spinner, just rerun the registered providers against
+  -- the current entries and rerender. Nothing emits it when no companion
+  -- is loaded, so stock diffview is unaffected.
+  self._on_status_refresh = function()
+    if self.bufnr and api.nvim_buf_is_valid(self.bufnr) then
+      self:refresh_status()
+    end
+  end
+  DiffviewGlobal.emitter:on("refresh_worktree_overview_status", self._on_status_refresh)
+end
+
+---Rerun every registered status provider against the current entries and
+---rerender. Does NOT touch git state (no worktree_list, no base/stats
+---probes), so this is the right path for cheap, companion-driven
+---updates (e.g., a sidekick session attached). Scheduled onto the main
+---loop so a slow provider never blocks the caller. No-op when there
+---are no entries to score, so a call before the first refresh is safe.
+function WorktreeOverviewView:refresh_status()
+  if not (self.bufnr and api.nvim_buf_is_valid(self.bufnr)) then
+    return
+  end
+  if not self.entries or #self.entries == 0 then
+    return
+  end
+  vim.schedule(function()
+    if not (self.bufnr and api.nvim_buf_is_valid(self.bufnr)) then
+      return
+    end
+    local by_path = {}
+    for _, e in ipairs(self.entries) do
+      by_path[e.path] = format_status(e)
+    end
+    self._status_by_path = by_path
+    self:render()
   end)
 end
 
@@ -803,6 +843,10 @@ end
 
 ---@override
 function WorktreeOverviewView:close()
+  if self._on_status_refresh then
+    DiffviewGlobal.emitter:off(self._on_status_refresh, "refresh_worktree_overview_status")
+    self._on_status_refresh = nil
+  end
   if self.bufnr and api.nvim_buf_is_valid(self.bufnr) then
     pcall(api.nvim_buf_delete, self.bufnr, { force = true })
   end

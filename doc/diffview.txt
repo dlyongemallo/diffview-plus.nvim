@@ -1595,7 +1595,7 @@ worktree_overview                               *diffview-config-worktree_overvi
 
                                                 *diffview-worktree-overview-hooks*
         Companion plugins can decorate the overview and react to its
-        lifecycle through two surfaces:
+        lifecycle through three surfaces:
 
         1. A status-column provider registry on the view module.
            Providers are called per entry on refresh (not on every
@@ -1652,6 +1652,19 @@ worktree_overview                               *diffview-config-worktree_overvi
              function(_, view) ... end
            )
 <
+        3. One request-event on `DiffviewGlobal.emitter`, listened to
+           by every open overview view:
+
+              `refresh_worktree_overview_status`
+                      Emit this to ask every open overview to rerun
+                      its registered status providers and rerender.
+                      Does NOT re-query git (no worktree list, no
+                      stats batch), so it is cheap enough to fire on
+                      external events (e.g., a sidekick session
+                      attached). The companion plugin is responsible
+                      for invalidating its own cache first if its
+                      provider is cache-backed.
+
 hooks                                           *diffview-config-hooks*
         Type: `table<string, function>`, Default: `{}`
 
