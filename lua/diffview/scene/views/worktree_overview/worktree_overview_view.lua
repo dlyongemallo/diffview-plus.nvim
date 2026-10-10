@@ -60,34 +60,53 @@ local HL = {
 
 local M = {}
 
----@alias WorktreeOverviewView.StatusProvider fun(entry: GitAdapter.WorktreeEntry): string?
-
----Forward-declared so `WorktreeOverviewView:refresh` can call it to resolve
----each row's status outside the render path. Definition is further below.
----@type fun(entry: GitAdapter.WorktreeEntry): string
-local format_status
+---@alias WorktreeOverviewView.StatusProvider fun(entry: GitAdapter.WorktreeEntry, done: fun(result: string?))
 
 ---Companion plugins (`diffview-coding-agents.nvim` and friends) register
 ---here to fill the overview's status column from external state. Multiple
----providers are supported; the view calls each one per entry, filters nil
----and empty returns, and joins the rest with a space.
+---providers are supported; the view fans out one call per entry per
+---provider, collects their `done(result)` payloads, filters nil and empty
+---results, and joins the rest with a space.
 ---@type WorktreeOverviewView.StatusProvider[]
 local status_providers = {}
 
----Register a status provider. Return `nil` or `""` to leave an entry blank.
+---Forward-declared so `WorktreeOverviewView:refresh_status` and
+---`:refresh` can reach it; the definition sits further below next to the
+---other provider plumbing.
+---@type fun(entries: GitAdapter.WorktreeEntry[], done: fun(by_path: table<string, string>))
+local collect_statuses
+
+---Upper bound on how long one `collect_statuses` batch waits for every
+---provider to report. If a provider never calls `done`, the batch settles
+---with whatever came in and ignores any late calls, so a buggy provider
+---cannot stall the status column forever.
+local STATUS_TIMEOUT_MS = 10000
+
+---Register a status provider.
 ---
 ---Contract:
----  - Providers are called on the main loop in a scheduled callback after the
----    overview first renders, so the first paint and `refresh()` complete
----    before any provider runs. A slow provider still blocks the main loop
----    while its callback is executing, so always perform blocking work
----    (shell-outs, `/proc` scans, HTTP calls) off the main loop and return
----    the latest cached value here. That keeps the status column filling
----    promptly instead of freezing the editor on the second paint.
+---  - A provider is `fun(entry, done)` and MUST call `done(result)` exactly
+---    once with its string or `nil`/`""` to leave the entry blank. Calling
+---    `done` more than once is a no-op; failing to call it stalls the whole
+---    batch until the timeout fires (currently 10s), at which point whatever
+---    has arrived is published and late calls are dropped.
+---  - `done` may be called synchronously inside the provider body (for cached
+---    or trivial results) or later from any libuv thread or scheduled
+---    callback. The view runs every provider × entry pair concurrently, so
+---    the batch's wall-clock is bounded by the slowest cell rather than the
+---    sum of all cells. The batch publishes once every cell has reported (or
+---    the timeout fires), so faster cells are not rendered individually.
+---  - Blocking work (shell-outs, `/proc` scans, HTTP calls) MUST happen off
+---    the main loop (e.g., via `diffview.job`, `vim.system`, `vim.uv.spawn`)
+---    and feed its result into `done` from the completion callback. The
+---    editor is frozen while the provider body itself runs, so a provider
+---    that blocks (whether or not it has already called `done`) stalls the
+---    main loop until it returns.
 ---  - Returned strings must not contain `\n` or `\r`; the view defensively
 ---    collapses them to spaces to avoid E5086 at render time, but a provider
 ---    that passes multi-line output through will lose structure.
----  - Errors raised by the provider are swallowed with `pcall` so a broken
+---  - Errors raised while invoking the provider are swallowed with `pcall`;
+---    the row is treated as if `done(nil)` had been called, so a broken
 ---    companion plugin cannot take the overview down.
 ---@param fn WorktreeOverviewView.StatusProvider
 function M.register_status_provider(fn)
@@ -117,6 +136,7 @@ end
 ---@field winid integer?
 ---@field render_data RenderData?
 ---@field _status_by_path? table<string, string> # `refresh` resolves each row's status column into this map so `render` reads strings instead of calling providers in its hot path.
+---@field _status_epoch? integer # Monotonic counter. Each `refresh`/`refresh_status` increments it before kicking off `collect_statuses`; a batch whose epoch no longer matches is a stale result from an earlier call and is dropped.
 ---@field _on_status_refresh? fun() # Handler we installed on `DiffviewGlobal.emitter` for `refresh_worktree_overview_status`.
 ---@field _spinner_timer uv_timer_t?
 ---@field _spinner_start? integer # hrtime nanoseconds at the start of this spin.
@@ -181,9 +201,11 @@ end
 ---Rerun every registered status provider against the current entries and
 ---rerender. Does NOT touch git state (no worktree_list, no base/stats
 ---probes), so this is the right path for cheap, companion-driven
----updates (e.g., a sidekick session attached). Scheduled onto the main
----loop so a slow provider never blocks the caller. No-op when there
----are no entries to score, so a call before the first refresh is safe.
+---updates (e.g., a sidekick session attached). The batch runs
+---asynchronously, so a slow provider never blocks the caller. No-op
+---when there are no entries to score, so a call before the first
+---refresh is safe. If a newer refresh starts before this one settles,
+---the stale batch's result is dropped via the epoch guard.
 function WorktreeOverviewView:refresh_status()
   if not (self.bufnr and api.nvim_buf_is_valid(self.bufnr)) then
     return
@@ -191,16 +213,25 @@ function WorktreeOverviewView:refresh_status()
   if not self.entries or #self.entries == 0 then
     return
   end
+  local entries = self.entries
+  local epoch = (self._status_epoch or 0) + 1
+  self._status_epoch = epoch
+  -- Defer onto the main loop so the companion's emit returns before any
+  -- provider runs, matching the "overview renders first" invariant.
   vim.schedule(function()
     if not (self.bufnr and api.nvim_buf_is_valid(self.bufnr)) then
       return
     end
-    local by_path = {}
-    for _, e in ipairs(self.entries) do
-      by_path[e.path] = format_status(e)
-    end
-    self._status_by_path = by_path
-    self:render()
+    collect_statuses(entries, function(by_path)
+      if self._status_epoch ~= epoch then
+        return
+      end
+      if not (self.bufnr and api.nvim_buf_is_valid(self.bufnr)) then
+        return
+      end
+      self._status_by_path = by_path
+      self:render()
+    end)
   end)
 end
 
@@ -449,58 +480,146 @@ function WorktreeOverviewView:refresh()
   profile("render")
   DiffviewGlobal.emitter:emit("worktree_overview_refreshed", self, entries)
 
-  -- Resolve the status column asynchronously. Providers can be arbitrarily
-  -- slow on first call (sidekick's shells out to `/proc` + `lsof`, which
-  -- on some machines takes tens of seconds), and resolving them inline
-  -- would freeze the UI between the stats batch and the first paint. By
-  -- deferring to a scheduled callback the overview renders first with the
-  -- status column collapsed, then widens with real values once resolved.
-  -- Keep the previous `_status_by_path` in place for the first render so
-  -- a repeat refresh does not momentarily blank the column.
+  -- Resolve the status column asynchronously. Providers run concurrently
+  -- across all entries via `collect_statuses`; any blocking work they do
+  -- should be off the main loop (shell-outs, `/proc` scans, HTTP) and
+  -- fed back through `done`. Deferring the batch by one tick keeps the
+  -- overview visible with the previous `_status_by_path` in place, so a
+  -- repeat refresh never momentarily blanks the column and a misbehaving
+  -- synchronous provider still cannot freeze the first paint.
+  local epoch = (self._status_epoch or 0) + 1
+  self._status_epoch = epoch
   vim.schedule(function()
     if not (self.bufnr and api.nvim_buf_is_valid(self.bufnr)) then
       return
     end
-    -- Split the loop so the profiler can tell apart the first call's
-    -- cost (which pays the full provider scan) from the rest (which
-    -- normally hit a short-lived cache inside the provider).
-    local by_path = {}
-    if entries[1] then
-      by_path[entries[1].path] = format_status(entries[1])
-    end
-    profile("status_resolved.first")
-    for i = 2, #entries do
-      by_path[entries[i].path] = format_status(entries[i])
-    end
-    profile("status_resolved.rest")
-    self._status_by_path = by_path
-    self:render()
-    profile("render:deferred")
+    collect_statuses(entries, function(by_path)
+      if self._status_epoch ~= epoch then
+        return
+      end
+      if not (self.bufnr and api.nvim_buf_is_valid(self.bufnr)) then
+        return
+      end
+      self._status_by_path = by_path
+      self:render()
+      profile("render:deferred")
+    end)
   end)
 end
 
----Collect the status column text for one entry, by polling every registered
----provider in order and joining their non-empty returns with a space.
----@param e GitAdapter.WorktreeEntry
----@return string
-function format_status(e)
-  if #status_providers == 0 then
-    return ""
+---Run every registered status provider against each entry concurrently and
+---call `done(by_path)` once the batch has settled. The batch settles when
+---every provider × entry pair reports a result, OR when `STATUS_TIMEOUT_MS`
+---has elapsed; late reports after that are dropped on the floor.
+---
+---`by_path[path]` is the joined, newline-sanitized status string for each
+---entry (empty string when no provider contributed a non-empty result).
+---Provider invocation is pcall-wrapped: a provider that errors synchronously
+---is treated as if it had called `done(nil)` and never stalls the batch.
+---Multiple `done` calls from the same provider are ignored.
+---@param entries GitAdapter.WorktreeEntry[]
+---@param done fun(by_path: table<string, string>)
+function collect_statuses(entries, done)
+  local by_path = {}
+  local pending = #entries * #status_providers
+  if pending == 0 then
+    for _, e in ipairs(entries) do
+      by_path[e.path] = ""
+    end
+    done(by_path)
+    return
   end
-  local parts = {}
-  for _, fn in ipairs(status_providers) do
-    local ok, result = pcall(fn, e)
-    if ok and type(result) == "string" and result ~= "" then
-      -- `nvim_buf_set_lines` rejects any embedded `\n` with E5086 and
-      -- would propagate past the per-provider `pcall`, taking the whole
-      -- view down. Flatten `\r` and `\n` to spaces defensively so a
-      -- provider that leaks a trailing newline from a shell call (or
-      -- returns a multi-line summary) cannot crash the render.
-      result = result:gsub("[\r\n]+", " ")
-      parts[#parts + 1] = result
+
+  -- Indexed by provider slot so `finalize` can concatenate in registration
+  -- order regardless of which provider's `done` fires first; concurrent
+  -- completion order must not reorder the status column.
+  local n_providers = #status_providers
+  local slots_by_path = {}
+  for _, e in ipairs(entries) do
+    slots_by_path[e.path] = {}
+  end
+
+  local settled = false
+  local timeout_timer
+
+  local function finalize()
+    if settled then
+      return
+    end
+    settled = true
+    if timeout_timer then
+      timeout_timer:close()
+    end
+    for _, e in ipairs(entries) do
+      local slots = slots_by_path[e.path]
+      local parts = {}
+      for i = 1, n_providers do
+        local v = slots[i]
+        if v then
+          parts[#parts + 1] = v
+        end
+      end
+      by_path[e.path] = table.concat(parts, " ")
+    end
+    done(by_path)
+  end
+
+  local function on_result(path, idx, result)
+    if settled then
+      return
+    end
+    if type(result) == "string" and result ~= "" then
+      -- `nvim_buf_set_lines` rejects any embedded `\n` with E5086. Flatten
+      -- `\r` and `\n` to spaces defensively so a provider that leaks a
+      -- trailing newline from a shell call, or returns a multi-line
+      -- summary, cannot crash the render.
+      slots_by_path[path][idx] = result:gsub("[\r\n]+", " ")
+    end
+    pending = pending - 1
+    if pending == 0 then
+      finalize()
     end
   end
-  return table.concat(parts, " ")
+
+  -- Arm the timeout guard before dispatch so a provider that calls `done`
+  -- synchronously (completing the batch inside the dispatch loop) can close
+  -- the timer from inside `finalize` and not leak a libuv handle.
+  timeout_timer = vim.uv.new_timer()
+  if timeout_timer then
+    timeout_timer:start(STATUS_TIMEOUT_MS, 0, function()
+      vim.schedule(finalize)
+    end)
+  end
+
+  for _, e in ipairs(entries) do
+    local path = e.path
+    for idx, fn in ipairs(status_providers) do
+      local called = false
+      local function done_cb(result)
+        if called then
+          return
+        end
+        called = true
+        -- Providers may call `done` from a libuv thread (`vim.uv` callbacks
+        -- run in a fast context). Serialize the update onto the main loop
+        -- so `slots_by_path` writes and the eventual `done(by_path)` never
+        -- race the view's render path.
+        if vim.in_fast_event() then
+          vim.schedule(function()
+            on_result(path, idx, result)
+          end)
+        else
+          on_result(path, idx, result)
+        end
+      end
+      local ok = pcall(fn, e, done_cb)
+      if not ok and not called then
+        -- Provider errored on invocation without ever calling `done`. Count
+        -- it as a `nil` return so the batch can settle.
+        done_cb(nil)
+      end
+    end
+  end
 end
 
 ---Pick the branch-column text and highlight for one entry.

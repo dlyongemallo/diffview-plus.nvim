@@ -66,12 +66,13 @@ describe("diffview.scene.views.worktree_overview hooks", function()
 
       local view
       local calls = {}
-      local provider = function(e)
+      local provider = function(e, done)
         calls[#calls + 1] = e.path
         if e.path == linked then
-          return "working"
+          done("working")
+        else
+          done(nil)
         end
-        return nil
       end
 
       local ok, err = pcall(function()
@@ -235,11 +236,11 @@ describe("diffview.scene.views.worktree_overview hooks", function()
       -- returns a two-line summary. Either value handed to
       -- `nvim_buf_set_lines` unmodified would raise E5086 and crash the
       -- view past the per-provider `pcall`.
-      overview.register_status_provider(function()
-        return "working\n"
+      overview.register_status_provider(function(_, done)
+        done("working\n")
       end)
-      overview.register_status_provider(function()
-        return "line-one\nline-two"
+      overview.register_status_provider(function(_, done)
+        done("line-one\nline-two")
       end)
 
       local view
@@ -260,6 +261,50 @@ describe("diffview.scene.views.worktree_overview hooks", function()
         assert.is_not_nil(lines[1]:find("working", 1, true))
         assert.is_not_nil(lines[1]:find("line-one line-two", 1, true))
         assert.is_nil(lines[1]:find("\n", 1, true))
+      end)
+
+      overview.clear_status_providers()
+      test_utils.close_view(view)
+      test_utils.cleanup_repo(repo)
+      async.await(async.scheduler())
+
+      if not ok then
+        error(err)
+      end
+    end)
+  )
+
+  it(
+    "preserves provider registration order when `done` fires asynchronously",
+    test_utils.async_test(function()
+      local repo = test_utils.make_repo()
+
+      -- A deferred-done provider followed by a synchronous one. If the
+      -- collector appends in callback-completion order, the sync provider
+      -- lands first and the row renders "sync async". Preserving registry
+      -- order yields "async sync" regardless of which `done` fires first.
+      overview.register_status_provider(function(_, done)
+        vim.schedule(function()
+          done("async")
+        end)
+      end)
+      overview.register_status_provider(function(_, done)
+        done("sync")
+      end)
+
+      local view
+      local ok, err = pcall(function()
+        view = WorktreeOverviewView({ adapter = make_adapter(repo) })
+        view:open()
+
+        -- Pump twice: once for the dispatch tick, once for the deferred
+        -- `done` call to resolve and settle the batch.
+        async.await(async.schedule_now())
+        async.await(async.schedule_now())
+
+        local lines = vim.api.nvim_buf_get_lines(view.bufnr, 0, -1, false)
+        assert.equals(1, #lines)
+        assert.is_not_nil(lines[1]:find("async sync", 1, true))
       end)
 
       overview.clear_status_providers()
@@ -319,9 +364,9 @@ describe("diffview.scene.views.worktree_overview hooks", function()
       local view
       local provider_output = "first"
       local provider_calls = 0
-      local provider = function()
+      local provider = function(_, done)
         provider_calls = provider_calls + 1
-        return provider_output
+        done(provider_output)
       end
 
       local ok, err = pcall(function()
@@ -414,7 +459,7 @@ describe("diffview.scene.views.worktree_overview hooks", function()
       local repo = test_utils.make_repo()
 
       local view
-      local provider = function()
+      local provider = function(_, _done)
         error("provider blew up")
       end
 
@@ -425,7 +470,7 @@ describe("diffview.scene.views.worktree_overview hooks", function()
         -- A throwing provider must not propagate out of :open().
         view:open()
 
-        -- Let the deferred provider resolution fire so the throw actually
+        -- Let the deferred provider dispatch fire so the throw actually
         -- runs; otherwise the error-swallowing path is never exercised.
         async.await(async.schedule_now())
 

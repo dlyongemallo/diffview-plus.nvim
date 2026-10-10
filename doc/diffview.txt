@@ -1599,7 +1599,7 @@ worktree_overview                               *diffview-config-worktree_overvi
 
         1. A status-column provider registry on the view module.
            Providers are called per entry on refresh (not on every
-           render); non-empty returns are joined with a space, cached
+           render); non-empty results are joined with a space, cached
            by worktree path, and shown in a dedicated column on later
            renders. Refresh the view to invalidate the cache; a bare
            `render` call will not. Errors raised by a provider are
@@ -1608,25 +1608,36 @@ worktree_overview                               *diffview-config-worktree_overvi
            local overview = require(
              "diffview.scene.views.worktree_overview.worktree_overview_view"
            )
-           overview.register_status_provider(function(entry)
-             return my_agent_bridge.state_for(entry.path)
+           overview.register_status_provider(function(entry, done)
+             done(my_agent_bridge.state_for(entry.path))
            end)
 <
            Provider contract: ~
-             • Providers run on the main loop in a scheduled callback
-               after the overview first renders, so the first paint
-               and the refresh itself complete before any provider
-               runs. A slow provider still blocks the main loop while
-               its callback is executing, so always do blocking work
-               (shell-outs, `/proc` scans, HTTP calls) off the main
-               loop and return the latest cached value from the
-               provider. That keeps the status column filling promptly
-               instead of freezing the editor on the second paint.
+             • A provider is `fun(entry, done)` and MUST call
+               `done(result)` exactly once with its string, or `nil`/
+               `""` to leave the entry blank. Extra `done` calls are
+               ignored; failing to call `done` stalls the whole batch
+               until the timeout fires (10s), at which point whatever
+               has arrived is published and late calls are dropped.
+             • `done` may fire synchronously inside the provider body
+               (for cached or trivial values) or later from any libuv
+               thread or scheduled callback. The view runs every
+               provider × entry pair concurrently, so the batch's
+               wall-clock is bounded by the slowest cell rather than
+               the sum of all cells. The batch publishes once every
+               cell has reported (or the timeout fires), so faster
+               cells are not rendered individually.
+             • Blocking work (shell-outs, `/proc` scans, HTTP calls)
+               MUST happen off the main loop (via `diffview.job`,
+               `vim.system`, `vim.uv.spawn`, etc.) and be fed into
+               `done` from the completion callback. The editor is
+               frozen while the provider body itself runs, so a
+               provider that blocks (whether or not it has already
+               called `done`) stalls the main loop until it returns.
              • Returned strings must not contain `\n` or `\r`. The
                view flattens any such characters to spaces defensively
                to keep |nvim_buf_set_lines()| from raising `E5086`,
                but multi-line output will lose its structure.
-             • A `nil` or `""` return leaves the entry blank.
         2. Three lifecycle hooks: `worktree_overview_opened`,
            `worktree_overview_refreshed`, and `worktree_overview_entered`.
            They are configured through the same `hooks` config table as
