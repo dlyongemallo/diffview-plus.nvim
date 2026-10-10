@@ -51,11 +51,13 @@ local status_providers = {}
 ---Register a status provider. Return `nil` or `""` to leave an entry blank.
 ---
 ---Contract:
----  - Providers are called synchronously on the main loop during a refresh,
----    once per entry. They must return quickly: perform any blocking work
+---  - Providers are called on the main loop in a scheduled callback after the
+---    overview first renders, so the first paint and `refresh()` complete
+---    before any provider runs. A slow provider still blocks the main loop
+---    while its callback is executing, so always perform blocking work
 ---    (shell-outs, `/proc` scans, HTTP calls) off the main loop and return
----    the latest cached value here. A slow provider blocks the refresh and
----    the editor.
+---    the latest cached value here. That keeps the status column filling
+---    promptly instead of freezing the editor on the second paint.
 ---  - Returned strings must not contain `\n` or `\r`; the view defensively
 ---    collapses them to spaces to avoid E5086 at render time, but a provider
 ---    that passes multi-line output through will lose structure.
@@ -343,20 +345,29 @@ function WorktreeOverviewView:refresh()
   end
   self:_tick_spinner()
 
-  -- Resolve every row's status column up front so `render` is pure
-  -- string plumbing instead of fanning out to each provider during the
-  -- extmark pass. Providers may be expensive on first call (sidekick's,
-  -- for instance, shells out to `/proc` + `lsof`); doing N of those
-  -- while the spinner is stopped would freeze the UI post-spinner.
-  self._status_by_path = {}
-  for _, e in ipairs(entries) do
-    self._status_by_path[e.path] = format_status(e)
-  end
-  self:_tick_spinner()
-
   self.entries = entries
   self:render()
   DiffviewGlobal.emitter:emit("worktree_overview_refreshed", self, entries)
+
+  -- Resolve the status column asynchronously. Providers can be arbitrarily
+  -- slow on first call (sidekick's shells out to `/proc` + `lsof`, which
+  -- on some machines takes tens of seconds), and resolving them inline
+  -- would freeze the UI between the stats batch and the first paint. By
+  -- deferring to a scheduled callback the overview renders first with the
+  -- status column collapsed, then widens with real values once resolved.
+  -- Keep the previous `_status_by_path` in place for the first render so
+  -- a repeat refresh does not momentarily blank the column.
+  vim.schedule(function()
+    if not (self.bufnr and api.nvim_buf_is_valid(self.bufnr)) then
+      return
+    end
+    local by_path = {}
+    for _, e in ipairs(entries) do
+      by_path[e.path] = format_status(e)
+    end
+    self._status_by_path = by_path
+    self:render()
+  end)
 end
 
 ---Collect the status column text for one entry, by polling every registered

@@ -1559,12 +1559,15 @@ worktree_overview                               *diffview-config-worktree_overvi
            end)
 <
            Provider contract: ~
-             • Providers run synchronously on the main loop during
-               each refresh. They must return quickly, so do any
-               blocking work (shell-outs, `/proc` scans, HTTP calls)
-               off the main loop and return the latest cached value
-               from the provider. A slow provider blocks the refresh
-               and freezes the editor.
+             • Providers run on the main loop in a scheduled callback
+               after the overview first renders, so the first paint
+               and the refresh itself complete before any provider
+               runs. A slow provider still blocks the main loop while
+               its callback is executing, so always do blocking work
+               (shell-outs, `/proc` scans, HTTP calls) off the main
+               loop and return the latest cached value from the
+               provider. That keeps the status column filling promptly
+               instead of freezing the editor on the second paint.
              • Returned strings must not contain `\n` or `\r`. The
                view flattens any such characters to spaces defensively
                to keep |nvim_buf_set_lines()| from raising `E5086`,

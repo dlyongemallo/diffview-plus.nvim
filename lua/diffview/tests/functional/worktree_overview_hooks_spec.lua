@@ -82,6 +82,12 @@ describe("diffview.scene.views.worktree_overview hooks", function()
         view = WorktreeOverviewView({ adapter = make_adapter(repo) })
         view:open()
 
+        -- `refresh` defers provider calls to a `vim.schedule` so a slow
+        -- provider cannot freeze the UI between the stats batch and the
+        -- first paint. Pump the main loop to let that callback fire
+        -- before asserting what the provider saw and what rendered.
+        async.await(async.schedule_now())
+
         -- Provider was called at least once per worktree during the render.
         local seen = {}
         for _, p in ipairs(calls) do
@@ -241,6 +247,10 @@ describe("diffview.scene.views.worktree_overview hooks", function()
         view = WorktreeOverviewView({ adapter = make_adapter(repo) })
         view:open()
 
+        -- Let the deferred provider resolution fire so the status column
+        -- is populated before we inspect the rendered buffer.
+        async.await(async.schedule_now())
+
         local lines = vim.api.nvim_buf_get_lines(view.bufnr, 0, -1, false)
         -- Buffer still has exactly one row (one worktree, no bare entries).
         assert.equals(1, #lines)
@@ -316,6 +326,10 @@ describe("diffview.scene.views.worktree_overview hooks", function()
         view = WorktreeOverviewView({ adapter = make_adapter(repo) })
         -- A throwing provider must not propagate out of :open().
         view:open()
+
+        -- Let the deferred provider resolution fire so the throw actually
+        -- runs; otherwise the error-swallowing path is never exercised.
+        async.await(async.schedule_now())
 
         -- Buffer rendered without the provider's status, but still rendered.
         local lines = vim.api.nvim_buf_get_lines(view.bufnr, 0, -1, false)

@@ -323,10 +323,7 @@ describe("diffview.vcs.file", function()
           file:attach_buffer()
         end)
 
-        assert.is_true(
-          ok,
-          "File:attach_buffer let a vim.lsp error escape: " .. tostring(err)
-        )
+        assert.is_true(ok, "File:attach_buffer let a vim.lsp error escape: " .. tostring(err))
 
         file:detach_buffer()
       end)
@@ -343,10 +340,7 @@ describe("diffview.vcs.file", function()
           file:detach_buffer()
         end)
 
-        assert.is_true(
-          ok,
-          "File:detach_buffer let a vim.lsp error escape: " .. tostring(err)
-        )
+        assert.is_true(ok, "File:detach_buffer let a vim.lsp error escape: " .. tostring(err))
       end)
     )
 
