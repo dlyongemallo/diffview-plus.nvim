@@ -9,6 +9,32 @@ local utils = lazy.require("diffview.utils") ---@module "diffview.utils"
 
 local api = vim.api
 
+---Opt-in phase profiler for `:DiffviewWorktreeOverview`. Enable by setting
+---`DIFFVIEW_OVERVIEW_PROFILE_LOG` to a file path (or `1` for the default
+---`stdpath("cache")/diffview-overview-profile.log`). Writes one TSV line
+---per phase: `<unix_ms>\t<phase>\t<ms-since-last-sample>`. No-op otherwise.
+---Kept behind an env flag so production runs pay zero.
+---@return fun(phase: string)
+local function new_profiler()
+  local target = vim.env.DIFFVIEW_OVERVIEW_PROFILE_LOG
+  if not target or target == "" then
+    return function() end
+  end
+  if target == "1" then
+    target = vim.fn.stdpath("cache") .. "/diffview-overview-profile.log"
+  end
+  local last = vim.uv.hrtime()
+  return function(phase)
+    local now = vim.uv.hrtime()
+    local f = io.open(target, "a")
+    if f then
+      f:write(string.format("%d\t%s\t%.2f\n", os.time() * 1000, phase, (now - last) / 1e6))
+      f:close()
+    end
+    last = now
+  end
+end
+
 ---Highlight-group aliases for the overview columns, named by role rather
 ---than by the underlying group so a future theme pass can be rerouted in
 ---one place. Groups are the standard diffview palette shared with every
@@ -310,7 +336,9 @@ end
 ---resolved base baked in). Everything in a batch runs concurrently;
 ---worktrees are not resolved serially.
 function WorktreeOverviewView:refresh()
+  local profile = new_profiler()
   local entries = self.adapter:worktree_list()
+  profile("worktree_list")
   if entries == nil then
     -- Keep the previous entries so a transient failure doesn't flash the
     -- view to empty, and distinguish failure from a genuinely empty list.
@@ -341,9 +369,11 @@ function WorktreeOverviewView:refresh()
       base_jobs[#base_jobs + 1] = j
     end
   end
+  profile("probes_built")
   local yield_between = self._spinner_start ~= nil
   run_batch(base_jobs, yield_between)
   self:_tick_spinner()
+  profile("base_batch")
 
   local base = cfg.base or (base_parser and base_parser()) or nil
 
@@ -363,6 +393,7 @@ function WorktreeOverviewView:refresh()
   end
   run_batch(stats_jobs, yield_between)
   self:_tick_spinner()
+  profile("stats_batch")
 
   for _, e in ipairs(entries) do
     local parse = stats_parsers[e.path]
@@ -371,9 +402,11 @@ function WorktreeOverviewView:refresh()
     end
   end
   self:_tick_spinner()
+  profile("stats_parse")
 
   self.entries = entries
   self:render()
+  profile("render")
   DiffviewGlobal.emitter:emit("worktree_overview_refreshed", self, entries)
 
   -- Resolve the status column asynchronously. Providers can be arbitrarily
@@ -388,12 +421,21 @@ function WorktreeOverviewView:refresh()
     if not (self.bufnr and api.nvim_buf_is_valid(self.bufnr)) then
       return
     end
+    -- Split the loop so the profiler can tell apart the first call's
+    -- cost (which pays the full provider scan) from the rest (which
+    -- normally hit a short-lived cache inside the provider).
     local by_path = {}
-    for _, e in ipairs(entries) do
-      by_path[e.path] = format_status(e)
+    if entries[1] then
+      by_path[entries[1].path] = format_status(entries[1])
     end
+    profile("status_resolved.first")
+    for i = 2, #entries do
+      by_path[entries[i].path] = format_status(entries[i])
+    end
+    profile("status_resolved.rest")
     self._status_by_path = by_path
     self:render()
+    profile("render:deferred")
   end)
 end
 
@@ -672,6 +714,7 @@ function WorktreeOverviewView:render()
   if not (self.bufnr and api.nvim_buf_is_valid(self.bufnr)) then
     return
   end
+  local profile = new_profiler()
 
   self.render_data = self.render_data or renderer.RenderData("diffview-worktree-overview")
   local data = self.render_data ---@cast data RenderData
@@ -700,6 +743,7 @@ function WorktreeOverviewView:render()
 
   local w = compute_widths(visible, has_status and self._status_by_path or nil)
   local prefix_len = common_dir_prefix_len(visible)
+  profile("render.widths")
 
   for i, e in ipairs(visible) do
     local is_current = cwd_top and e.path == cwd_top or false
@@ -730,8 +774,10 @@ function WorktreeOverviewView:render()
 
     data.lines[i] = table.concat(ctx.line)
   end
+  profile("render.rows")
 
   renderer.render(self.bufnr, data)
+  profile("render.renderer")
 end
 
 ---Install the user's `keymaps.worktree_overview` block on the overview
