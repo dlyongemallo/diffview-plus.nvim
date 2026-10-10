@@ -604,6 +604,8 @@ COMMANDS                                        *diffview-commands*
                         tabpage listing every linked git worktree.
 
                         Default keymaps on the overview buffer: >
+                            `j` `<down>`          next worktree
+                            `k` `<up>`            previous worktree
                             `R`               re-scan worktrees
                             `<CR>` `o` `l`        open DiffView for the selected worktree
                             `<2-LeftMouse>`   same (mouse)

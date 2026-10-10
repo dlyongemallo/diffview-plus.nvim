@@ -125,6 +125,33 @@ function WorktreeOverviewView:init_event_listeners()
   self.emitter:on("worktree_overview_enter", function()
     self:enter_selected()
   end)
+  -- `common_panel_keymaps` routes `j`/`k`/`<down>`/`<up>` through these
+  -- events. The file panel's handlers snap the cursor to column 0 after
+  -- each row move; we mirror that so the overview feels the same (every
+  -- row-move leaves the cursor at the beginning of the line, regardless
+  -- of where in the row it was before).
+  self.emitter:on("next_entry", function()
+    self:move_cursor(vim.v.count1)
+  end)
+  self.emitter:on("prev_entry", function()
+    self:move_cursor(-vim.v.count1)
+  end)
+end
+
+---Move the cursor `delta` rows (positive = down, negative = up) in the
+---current window showing this view, clamped to the buffer's extent, and
+---always drop it at column 0 so horizontal drift between row-moves is
+---erased (matches the behaviour of `file_panel`'s `next_entry`).
+---@param delta integer
+function WorktreeOverviewView:move_cursor(delta)
+  if not (self.bufnr and api.nvim_buf_is_valid(self.bufnr)) then
+    return
+  end
+  local win = api.nvim_get_current_win()
+  local row = api.nvim_win_get_cursor(win)[1]
+  local last = api.nvim_buf_line_count(self.bufnr)
+  local target = math.min(math.max(1, row + delta), last)
+  api.nvim_win_set_cursor(win, { target, 0 })
 end
 
 ---@override

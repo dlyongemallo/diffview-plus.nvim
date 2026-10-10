@@ -794,6 +794,10 @@ M.defaults = {
       { "n", "<esc>", actions.close,  { desc = "Close commit log" } },
     },
     worktree_overview = {
+      { "n", "j",              actions.next_entry,                { desc = "Bring the cursor to the next worktree" } },
+      { "n", "<down>",         actions.next_entry,                { desc = "Bring the cursor to the next worktree" } },
+      { "n", "k",              actions.prev_entry,                { desc = "Bring the cursor to the previous worktree" } },
+      { "n", "<up>",           actions.prev_entry,                { desc = "Bring the cursor to the previous worktree" } },
       { "n", "R",              actions.refresh_files,             { desc = "Re-scan worktrees and stats" } },
       { "n", "<CR>",           actions.worktree_overview_enter,   { desc = "Open DiffView for the selected worktree" } },
       { "n", "o",              actions.worktree_overview_enter,   { desc = "Open DiffView for the selected worktree" } },
