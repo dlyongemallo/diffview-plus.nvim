@@ -601,7 +601,12 @@ COMMANDS                                        *diffview-commands*
                                                 *:DiffviewWorktreeOverview*
 :DiffviewWorktreeOverview
                         Open the cross-worktree overview: a dedicated
-                        tabpage listing every linked git worktree.
+                        tabpage listing every linked git worktree. Each
+                        row shows the branch, ahead/behind counts
+                        against a resolved base, diff-shortstat totals,
+                        and a staged/unstaged/untracked trio. See
+                        |diffview-worktree-overview-columns| for a
+                        column legend.
 
                         Default keymaps on the overview buffer: >
                             `R`               re-scan worktrees
@@ -612,6 +617,51 @@ COMMANDS                                        *diffview-commands*
                         Close the overview with |:DiffviewClose| (same as
                         every other diffview tab).
                         Git only.
+
+                                                *diffview-worktree-overview-columns*
+Column legend ~
+                        Each non-bare row renders these columns, left
+                        to right. Numeric columns right-align to the
+                        widest value in the batch.
+
+                            `*`              Marker for the worktree the
+                                           overview was launched from.
+                                           Omitted when launched outside
+                                           any worktree (e.g., from a
+                                           bare repo).
+                            branch         Branch name, or
+                                           `(detached <short-sha>)` for
+                                           a detached HEAD, or `(bare)`
+                                           for bare rows.
+                            status         Optional column populated by
+                                           companion plugins (see
+                                           |diffview-worktree-overview-hooks|).
+                                           Omitted when no provider
+                                           registers.
+                            `↑N` `↓N`          Commits ahead / behind the
+                                           resolved comparison base
+                                           (`origin/HEAD` with
+                                           fallbacks; see `base` in
+                                           |diffview-config-worktree_overview|).
+                            `Nf`             Files changed in `base...HEAD`
+                                           per `git diff --shortstat`.
+                            `+N` `-N`          Insertion / deletion counts
+                                           from the same shortstat.
+                            `Ns` `Nu` `N?`       Dirty trio from
+                                           `git status --porcelain`:
+                                           staged (index-vs-HEAD),
+                                           unstaged (worktree-vs-index),
+                                           and untracked file counts.
+                                           The whole trio is omitted
+                                           when every row in the batch
+                                           is clean; when some rows are
+                                           dirty the trio shows for all
+                                           of them, with zero components
+                                           dimmed.
+                            path           Worktree root, with the
+                                           common parent directory of
+                                           every row stripped so the
+                                           rows read as a tidy list.
 
                                                 *:DiffviewLog*
 :DiffviewLog            Open the debug log.
