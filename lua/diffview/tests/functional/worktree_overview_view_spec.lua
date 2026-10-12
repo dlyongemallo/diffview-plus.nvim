@@ -39,6 +39,18 @@ describe("diffview.scene.views.worktree_overview WorktreeOverviewView", function
         assert.is_truthy(joined:find(repo, 1, true))
         assert.is_truthy(joined:find(linked, 1, true))
         assert.is_truthy(joined:find("feature/x", 1, true))
+
+        -- The linked worktree was branched off `make_repo`'s single commit
+        -- with no further commits, so its ahead count should be zero.
+        local linked_entry
+        for _, e in ipairs(view.entries) do
+          if e.path == linked then
+            linked_entry = e
+            break
+          end
+        end
+        assert.is_not_nil(linked_entry)
+        assert.equals(0, linked_entry.stats.ahead)
       end)
 
       test_utils.close_view(view)
@@ -83,6 +95,61 @@ describe("diffview.scene.views.worktree_overview WorktreeOverviewView", function
         assert.is_true(lhs["<CR>"])
       end)
 
+      test_utils.close_view(view)
+      test_utils.cleanup_repo(repo)
+      async.await(async.scheduler())
+
+      if not ok then
+        error(err)
+      end
+    end)
+  )
+
+  it(
+    "hides bare worktrees unless include_bare is enabled",
+    test_utils.async_test(function()
+      -- Driving `include_bare` with a real bare repo would mean switching
+      -- the whole repo to `--bare`, which `make_repo` is not set up for.
+      -- Inject a synthetic bare entry alongside a real one and re-render,
+      -- which exercises the exact filter path.
+      local repo = test_utils.make_repo()
+
+      local view
+      -- Snapshot the config before the pcall body so a failed assertion
+      -- inside doesn't leak `include_bare = true` into later specs.
+      local original = require("diffview.config")._config.worktree_overview
+      local ok, err = pcall(function()
+        view = WorktreeOverviewView({ adapter = make_adapter(repo) })
+        view:open()
+
+        view.entries = {
+          view.entries[1],
+          {
+            path = repo .. "-fake-bare",
+            is_bare = true,
+            is_detached = false,
+            is_locked = false,
+            is_prunable = false,
+          },
+        }
+
+        -- Default config: bare entries are filtered out of the visible list.
+        view:render()
+        local joined = table.concat(vim.api.nvim_buf_get_lines(view.bufnr, 0, -1, false), "\n")
+        assert.is_falsy(joined:find("(bare)", 1, true))
+        assert.equals(1, #view._visible_entries)
+
+        -- Flip the config and re-render; the bare row is now visible.
+        require("diffview.config")._config.worktree_overview =
+          vim.tbl_extend("force", original, { include_bare = true })
+
+        view:render()
+        joined = table.concat(vim.api.nvim_buf_get_lines(view.bufnr, 0, -1, false), "\n")
+        assert.is_truthy(joined:find("(bare)", 1, true))
+        assert.equals(2, #view._visible_entries)
+      end)
+
+      require("diffview.config")._config.worktree_overview = original
       test_utils.close_view(view)
       test_utils.cleanup_repo(repo)
       async.await(async.scheduler())
@@ -141,6 +208,19 @@ describe("diffview.scene.views.worktree_overview WorktreeOverviewView", function
         -- `resolve_default_base` can find in this fixture (no `origin/*`).
         local base = run({ "git", "rev-parse", "--abbrev-ref", "HEAD" }, repo)
         assert.equals(base .. "...", opened.rev_arg)
+
+        -- Overview should have picked up the extra commit as `ahead = 1`
+        -- against the resolved default base.
+        local linked_entry
+        for _, e in ipairs(overview.entries) do
+          if e.path == linked then
+            linked_entry = e
+            break
+          end
+        end
+        assert.is_not_nil(linked_entry)
+        assert.equals(1, linked_entry.stats.ahead)
+        assert.equals(1, linked_entry.stats.changed_files)
       end)
 
       test_utils.close_view(opened)
@@ -148,6 +228,102 @@ describe("diffview.scene.views.worktree_overview WorktreeOverviewView", function
       pcall(run, { "git", "worktree", "remove", "--force", linked }, repo)
       test_utils.cleanup_repo(repo)
       pcall(vim.fn.delete, linked, "rf")
+      async.await(async.scheduler())
+
+      if not ok then
+        error(err)
+      end
+    end)
+  )
+
+  it(
+    "renders status-unknown markers on a clean batch when the status probe errored",
+    test_utils.async_test(function()
+      -- Regression: when every visible row is clean except one whose
+      -- `git status` probe exited non-zero, `compute_widths` would see
+      -- no positive dirty count anywhere and leave `any_dirty` false, so
+      -- `trio_w` collapses to zero and `push_stats_cells` returns before
+      -- reaching the `status_unknown` branch. The affected row then
+      -- looked clean in the UI despite us knowing the probe failed.
+      local repo = test_utils.make_repo()
+
+      local view
+      local ok, err = pcall(function()
+        view = WorktreeOverviewView({ adapter = make_adapter(repo) })
+        view:open()
+
+        -- Synthesize two rows: one truly clean, one whose status probe
+        -- errored. Both have zero dirty counts, so without the fix the
+        -- widths dict never reserves trio space and the dim markers for
+        -- the errored row are suppressed. Use the real entry at [1] as
+        -- the clean baseline and craft a second one that mirrors it.
+        local real = view.entries[1]
+        local errored = {
+          path = real.path .. "-errored",
+          is_bare = false,
+          is_detached = false,
+          is_locked = false,
+          is_prunable = false,
+          head_commit = real.head_commit,
+          branch = real.branch,
+          ref = real.ref,
+          stats = {
+            base = real.stats and real.stats.base or nil,
+            ahead = 0,
+            behind = 0,
+            changed_files = 0,
+            insertions = 0,
+            deletions = 0,
+            staged = 0,
+            unstaged = 0,
+            untracked = 0,
+            errors = { "status" },
+          },
+        }
+        -- Zero out the real entry's dirty counts too so the batch has no
+        -- positive dirty count anywhere; this is the trigger shape.
+        if real.stats then
+          real.stats.staged = 0
+          real.stats.unstaged = 0
+          real.stats.untracked = 0
+          real.stats.errors = real.stats.errors or {}
+        end
+        view.entries = { real, errored }
+
+        view:render()
+        local lines = vim.api.nvim_buf_get_lines(view.bufnr, 0, -1, false)
+        assert.equals(2, #lines)
+        local clean_line, errored_line
+        for _, line in ipairs(lines) do
+          if line:find(errored.path, 1, true) then
+            errored_line = line
+          elseif line:find(real.path, 1, true) then
+            clean_line = line
+          end
+        end
+        assert.is_truthy(clean_line)
+        assert.is_truthy(errored_line)
+
+        -- Semantic check: each dirty-trio cell renders as `<marker><suffix>`,
+        -- and the suffix letters `s`/`u`/`?` live only on this trio -- so
+        -- a hit on each proves the `status_unknown` branch fired. Plain
+        -- find keeps the `?` from being treated as a pattern.
+        assert.is_truthy(errored_line:find("─s", 1, true))
+        assert.is_truthy(errored_line:find("─u", 1, true))
+        assert.is_truthy(errored_line:find("─?", 1, true))
+
+        -- Fixture-independent check: anything the two rows share (nil
+        -- base, probe errors on branch/diff) adds the same number of
+        -- dashes to both lines, so the delta isolates the trio's own
+        -- contribution. The errored row should carry exactly three
+        -- more dashes than the clean row.
+        local _, clean_dashes = clean_line:gsub("─", "")
+        local _, errored_dashes = errored_line:gsub("─", "")
+        assert.equals(3, errored_dashes - clean_dashes)
+      end)
+
+      test_utils.close_view(view)
+      test_utils.cleanup_repo(repo)
       async.await(async.scheduler())
 
       if not ok then

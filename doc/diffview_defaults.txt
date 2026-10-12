@@ -366,6 +366,10 @@ DEFAULT CONFIG                                  *diffview.defaults*
         { "n", "<CR>",  actions.worktree_overview_enter,   { desc = "Open DiffView for the selected worktree" } },
       },
     },
+    worktree_overview = {
+      base = nil,          -- See |diffview-config-worktree_overview|.
+      include_bare = false,
+    },
   })
 <
 

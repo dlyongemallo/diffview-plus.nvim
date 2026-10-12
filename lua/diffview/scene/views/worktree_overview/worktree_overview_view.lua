@@ -1,6 +1,8 @@
 local lazy = require("diffview.lazy")
 
+local Job = lazy.access("diffview.job", "Job") ---@type diffview.Job|LazyModule
 local View = lazy.access("diffview.scene.view", "View") ---@type View|LazyModule
+local config = lazy.require("diffview.config") ---@module "diffview.config"
 local oop = lazy.require("diffview.oop") ---@module "diffview.oop"
 local renderer = lazy.require("diffview.renderer") ---@module "diffview.renderer"
 local utils = lazy.require("diffview.utils") ---@module "diffview.utils"
@@ -17,16 +19,21 @@ local HL = {
   branch = "DiffviewReference",
   bare = "DiffviewNonText",
   detached = "DiffviewReference",
+  arrow = "DiffviewNonText",
+  counter = "DiffviewFilePanelCounter",
+  files_suffix = "DiffviewNonText",
+  insertions = "DiffviewFilePanelInsertions",
+  deletions = "DiffviewFilePanelDeletions",
+  staged = "DiffviewStatusAdded",
+  unstaged = "DiffviewStatusModified",
+  untracked = "DiffviewFilePanelCounter",
+  dim = "DiffviewNonText",
   path = "DiffviewFilePanelPath",
 }
 
 local M = {}
 
 ---Skeleton view that lists every linked git worktree in a single buffer.
----Later passes layer on stats, status, selection->DiffView wiring, and
----companion-plugin hooks; the skeleton establishes the plumbing (open,
----refresh, close, command registration) and the coloured, aligned
----rendering surface that those passes extend.
 ---@class WorktreeOverviewView : View
 ---@field adapter GitAdapter
 ---@field cwd_path? string # Toplevel of the worktree the overview was launched from. Nil when launched from outside any worktree (e.g., a bare repo root); the view then stars no row.
@@ -67,8 +74,6 @@ function WorktreeOverviewView:init_event_listeners()
   end)
 end
 
----Set up the single scratch window inside the new tabpage. The parent
----`View:open()` creates the tab and calls into here.
 ---@override
 function WorktreeOverviewView:init_layout()
   self.winid = api.nvim_get_current_win()
@@ -93,17 +98,87 @@ function WorktreeOverviewView:post_open()
   self.ready = true
 end
 
----Pull the worktree list from the adapter and redraw the buffer. Sync for
----now; stats collection and parallel probing come in follow-up passes.
+---Fire a batch of jobs concurrently and wait for all of them. The main
+---thread blocks inside each `job:sync()`, but libuv keeps every other job
+---running during the wait, so the batch is bounded by the slowest single
+---call rather than their sum.
+---@param jobs diffview.Job[]
+local function run_batch(jobs)
+  if #jobs == 0 then
+    return
+  end
+  Job.start_all(jobs)
+  for _, j in ipairs(jobs) do
+    j:sync()
+  end
+end
+
+---Pull the worktree list from the adapter, collect per-worktree stats, and
+---redraw the buffer. Runs two parallel batches: a shared base-resolution
+---batch (5 `rev-parse` probes total, since linked worktrees share the ref
+---database) then a stats batch (3 probes per non-bare worktree with the
+---resolved base baked in). Everything in a batch runs concurrently;
+---worktrees are not resolved serially.
 function WorktreeOverviewView:refresh()
   local entries = self.adapter:worktree_list()
   if entries == nil then
     -- Keep the previous entries so a transient failure doesn't flash the
     -- view to empty, and distinguish failure from a genuinely empty list.
     utils.err("Failed to query worktree list.")
-  else
-    self.entries = entries
+    self:render()
+    return
   end
+  local cfg = config.get_config().worktree_overview or {}
+
+  -- Phase 1: resolve the default comparison base. Linked worktrees share
+  -- the ref database, so `origin/HEAD`, `origin/main`, and friends are the
+  -- same lookup in every worktree; one batch of probes (run against the
+  -- first non-bare worktree) therefore answers for every row. A `base`
+  -- override in config bypasses the probes entirely.
+  local base_jobs = {}
+  local base_parser
+  local probe_cwd
+  for _, e in ipairs(entries) do
+    if not e.is_bare then
+      probe_cwd = e.path
+      break
+    end
+  end
+  if not cfg.base and probe_cwd then
+    local jobs, parse = self.adapter:build_default_base_probe_jobs(probe_cwd)
+    base_parser = parse
+    for _, j in ipairs(jobs) do
+      base_jobs[#base_jobs + 1] = j
+    end
+  end
+  run_batch(base_jobs)
+
+  local base = cfg.base or (base_parser and base_parser()) or nil
+
+  -- Phase 2: with the shared base in hand, batch the three stats probes
+  -- per worktree. Phase 2 cannot overlap phase 1 because each stats probe
+  -- takes the resolved base as a CLI argument.
+  local stats_jobs = {}
+  local stats_parsers = {}
+  for _, e in ipairs(entries) do
+    if not e.is_bare then
+      local jobs, parse = self.adapter:build_stats_probe_jobs(e.path, base)
+      stats_parsers[e.path] = parse
+      for _, j in ipairs(jobs) do
+        stats_jobs[#stats_jobs + 1] = j
+      end
+    end
+  end
+  run_batch(stats_jobs)
+
+  for _, e in ipairs(entries) do
+    local parse = stats_parsers[e.path]
+    if parse then
+      e.stats = parse()
+    end
+  end
+
+  self.entries = entries
   self:render()
 end
 
@@ -122,11 +197,194 @@ local function branch_label(e, is_current)
   return e.branch or "(unknown)", is_current and HL.branch_cur or HL.branch
 end
 
----Build the coloured buffer contents using the project's renderer. Each
----entry becomes one row: `<marker> <branch>  <path>`, with the branch
----label left-padded by display width so double-wide chars don't break
----alignment. The current worktree's marker and branch pick up the
----"selected" group, matching `DiffviewFileHistory`'s active-file styling.
+---Measure the per-column widths needed to align every visible row. Numeric
+---columns are measured as digit counts; the branch column is measured by
+---display width so that double-wide chars don't break alignment.
+---@param entries GitAdapter.WorktreeEntry[]
+---@return table
+local function compute_widths(entries)
+  local w = {
+    branch = 1,
+    ahead = 1,
+    behind = 1,
+    files = 1,
+    ins = 1,
+    dels = 1,
+    staged = 1,
+    unstaged = 1,
+    untracked = 1,
+  }
+  for _, e in ipairs(entries) do
+    local label = branch_label(e, false)
+    w.branch = math.max(w.branch, vim.fn.strdisplaywidth(label))
+    if e.stats then
+      w.ahead = math.max(w.ahead, #tostring(e.stats.ahead))
+      w.behind = math.max(w.behind, #tostring(e.stats.behind))
+      w.files = math.max(w.files, #tostring(e.stats.changed_files))
+      w.ins = math.max(w.ins, #tostring(e.stats.insertions))
+      w.dels = math.max(w.dels, #tostring(e.stats.deletions))
+      w.staged = math.max(w.staged, #tostring(e.stats.staged))
+      w.unstaged = math.max(w.unstaged, #tostring(e.stats.unstaged))
+      w.untracked = math.max(w.untracked, #tostring(e.stats.untracked))
+      -- Reserve the trio's columns both when a dirty count is non-zero AND
+      -- when a status probe errored on this row. Without the second
+      -- condition an all-clean batch where one row's `git status` failed
+      -- would leave `trio_w = 0`, so `push_stats_cells` returns before
+      -- it can render the `status_unknown` markers, and the row visually
+      -- claims a clean worktree the resolver could not actually confirm.
+      if
+        e.stats.staged > 0
+        or e.stats.unstaged > 0
+        or e.stats.untracked > 0
+        or vim.tbl_contains(e.stats.errors, "status")
+      then
+        w.any_dirty = true
+      end
+    end
+  end
+  return w
+end
+
+---Push a `{text, hl?}` segment onto the current line and record its byte
+---range as a highlight on `data.hl`. Byte offsets (not display width) are
+---correct here because extmarks address bytes.
+---@param ctx { data: RenderData, line_idx: integer, line: string[], col: integer }
+---@param text string
+---@param hl? string
+local function push(ctx, text, hl)
+  if text == "" then
+    return
+  end
+  if hl then
+    ctx.data.hl[#ctx.data.hl + 1] = {
+      group = hl,
+      line_idx = ctx.line_idx,
+      first = ctx.col,
+      last = ctx.col + #text,
+    }
+  end
+  ctx.line[#ctx.line + 1] = text
+  ctx.col = ctx.col + #text
+end
+
+---@param ctx table
+---@param n integer # Number of spaces; nil-safe clamp to zero.
+local function pad(ctx, n)
+  if n and n > 0 then
+    push(ctx, string.rep(" ", n))
+  end
+end
+
+---Marker used when a probe is unavailable (e.g., no base resolved, or a
+---sub-probe exited non-zero). Zero would silently misrepresent the row as
+---clean, so each affected cell shows a dim dash instead of a digit.
+local UNKNOWN = "─"
+
+---Resolve a counter cell's `(text, display_width, hl)` tuple. When the
+---probe is unavailable the cell collapses to a dim `UNKNOWN` marker
+---(display width 1); otherwise it uses the formatted value with the
+---caller-supplied highlight.
+---@param unknown boolean
+---@param n integer
+---@param hl string
+---@return string text, integer width, string hl
+local function fmt_cell(unknown, n, hl)
+  if unknown then
+    return UNKNOWN, 1, HL.dim
+  end
+  local s = tostring(n)
+  return s, #s, hl
+end
+
+---Push the ahead/behind/files/+ins/-dels run and the staged/unstaged/
+---untracked run for one entry.
+---@param ctx table
+---@param e GitAdapter.WorktreeEntry
+---@param w table
+local function push_stats_cells(ctx, e, w)
+  -- Display-column total of the dirty trio and the branch/diff run,
+  -- including the inter-cell gaps that `push_stats_cells` emits around
+  -- the arrows, 'f' suffix, and +/- prefixes. The arrows are 3 bytes but
+  -- 1 display column each, so byte counts and display columns diverge in
+  -- the populated row; this function pads by display column.
+  local trio_w = w.any_dirty and (w.staged + 2 + w.unstaged + 2 + w.untracked + 2) or 0
+
+  if e.is_bare or not e.stats then
+    local blank = (w.ahead + 2) + (w.behind + 3) + (w.files + 3) + (w.ins + 2) + (w.dels + 3)
+    pad(ctx, blank + trio_w)
+    return
+  end
+  local s = e.stats ---@cast s GitAdapter.WorktreeStats
+
+  -- Branch counters: nil base means the probes were skipped entirely, so
+  -- ahead/behind would silently read as 0; `errors` lists sub-probes that
+  -- exited non-zero. Either case renders the affected cells as unknown
+  -- so a stale probe doesn't masquerade as a clean row.
+  local branch_unknown = s.base == nil or vim.tbl_contains(s.errors, "rev-list")
+  local diff_unknown = s.base == nil or vim.tbl_contains(s.errors, "diff")
+  local status_unknown = vim.tbl_contains(s.errors, "status")
+
+  local text, cw, hl
+  text, cw, hl = fmt_cell(branch_unknown, s.ahead, HL.counter)
+  pad(ctx, w.ahead - cw)
+  push(ctx, "↑", HL.arrow)
+  push(ctx, text, hl)
+  push(ctx, " ")
+
+  text, cw, hl = fmt_cell(branch_unknown, s.behind, HL.counter)
+  pad(ctx, w.behind - cw)
+  push(ctx, "↓", HL.arrow)
+  push(ctx, text, hl)
+  push(ctx, "  ")
+
+  text, cw, hl = fmt_cell(diff_unknown, s.changed_files, HL.counter)
+  pad(ctx, w.files - cw)
+  push(ctx, text, hl)
+  push(ctx, "f", HL.files_suffix)
+  push(ctx, "  ")
+
+  text, cw, hl = fmt_cell(diff_unknown, s.insertions, HL.insertions)
+  pad(ctx, w.ins - cw)
+  push(ctx, "+" .. text, hl)
+  push(ctx, " ")
+
+  text, cw, hl = fmt_cell(diff_unknown, s.deletions, HL.deletions)
+  pad(ctx, w.dels - cw)
+  push(ctx, "-" .. text, hl)
+  push(ctx, "  ")
+
+  -- Dirty trio (`<n>s <n>u <n>?`, mirroring the git-status trio): pad
+  -- past it entirely for a clean row; otherwise show all three with
+  -- zero components dim so the user can tell at a glance which kind of
+  -- dirt is present. When the batch has no dirty rows at all, `trio_w`
+  -- is zero and this pad is a no-op. When the status probe errored the
+  -- counts are not meaningful, so render unknown markers in place of
+  -- zeros rather than claiming a clean row.
+  if trio_w == 0 then
+    return
+  end
+  if not status_unknown and s.staged == 0 and s.unstaged == 0 and s.untracked == 0 then
+    pad(ctx, trio_w)
+    return
+  end
+  local function dirty(count, width, hl_known, suffix)
+    local t, w1, h = fmt_cell(status_unknown, count, count > 0 and hl_known or HL.dim)
+    pad(ctx, width - w1)
+    push(ctx, t, h)
+    push(ctx, suffix, h)
+    push(ctx, " ")
+  end
+  dirty(s.staged, w.staged, HL.staged, "s")
+  dirty(s.unstaged, w.unstaged, HL.unstaged, "u")
+  dirty(s.untracked, w.untracked, HL.untracked, "?")
+end
+
+---Build the coloured, aligned buffer contents using the project's
+---renderer. Each entry becomes a single row with these columns, left to
+---right: cursor marker, branch label, branch state (ahead / behind /
+---files / insertions / deletions), dirty counts, path. Numeric columns
+---right-align to the widest value across entries, so the rows stack
+---visually.
 function WorktreeOverviewView:render()
   if not (self.bufnr and api.nvim_buf_is_valid(self.bufnr)) then
     return
@@ -137,49 +395,43 @@ function WorktreeOverviewView:render()
   data:clear()
 
   local cwd_top = self.cwd_path
+  local cfg = config.get_config().worktree_overview or {}
 
-  if #self.entries == 0 then
+  -- Hide bare worktrees by default; `enter_selected` would reject them
+  -- anyway. `self.entries` is left intact so callers that iterate it see
+  -- every worktree; `_visible_entries` is what the cursor maps against.
+  local visible = {}
+  for _, e in ipairs(self.entries) do
+    if cfg.include_bare or not e.is_bare then
+      visible[#visible + 1] = e
+    end
+  end
+  self._visible_entries = visible
+
+  if #visible == 0 then
     data.lines = { "(no worktrees)" }
     renderer.render(self.bufnr, data)
     return
   end
 
-  -- Branch column width, measured by display width so unicode in branch
-  -- names (arrows, emoji) doesn't throw off alignment.
-  local branch_w = 1
-  for _, e in ipairs(self.entries) do
-    local label = branch_label(e, false)
-    branch_w = math.max(branch_w, vim.fn.strdisplaywidth(label))
-  end
+  local w = compute_widths(visible)
 
-  for i, e in ipairs(self.entries) do
+  for i, e in ipairs(visible) do
     local is_current = cwd_top and e.path == cwd_top or false
-    local line = {}
-    local col = 0
+    local ctx = { data = data, line_idx = i - 1, line = {}, col = 0 }
 
-    local function push(text, hl)
-      if text == "" then
-        return
-      end
-      if hl then
-        data.hl[#data.hl + 1] = {
-          group = hl,
-          line_idx = i - 1,
-          first = col,
-          last = col + #text,
-        }
-      end
-      line[#line + 1] = text
-      col = col + #text
-    end
+    push(ctx, is_current and "* " or "  ", is_current and HL.cursor_marker or nil)
 
-    push(is_current and "* " or "  ", is_current and HL.cursor_marker or nil)
     local label, label_hl = branch_label(e, is_current)
-    push(label, label_hl)
-    push(string.rep(" ", branch_w - vim.fn.strdisplaywidth(label) + 2))
-    push(e.path, HL.path)
+    push(ctx, label, label_hl)
+    pad(ctx, w.branch - vim.fn.strdisplaywidth(label))
+    push(ctx, "  ")
 
-    data.lines[i] = table.concat(line)
+    push_stats_cells(ctx, e, w)
+    push(ctx, " ")
+    push(ctx, e.path, HL.path)
+
+    data.lines[i] = table.concat(ctx.line)
   end
 
   renderer.render(self.bufnr, data)
@@ -211,7 +463,7 @@ function WorktreeOverviewView:enter_selected()
   -- that leaves the overview buffer in a different window doesn't crash
   -- with "Invalid window id" when the original window is closed.
   local lnum = api.nvim_win_get_cursor(0)[1]
-  local entry = self.entries[lnum]
+  local entry = (self._visible_entries or self.entries)[lnum]
   if not entry then
     utils.info("No worktree on this line.")
     return
@@ -229,6 +481,7 @@ function WorktreeOverviewView:enter_selected()
     return
   end
 
+  local cfg = config.get_config().worktree_overview or {}
   local GitAdapter = require("diffview.vcs.adapters.git").GitAdapter
   local target = GitAdapter({
     toplevel = entry.path,
@@ -236,7 +489,7 @@ function WorktreeOverviewView:enter_selected()
     path_args = {},
   })
 
-  local base = target:resolve_default_base()
+  local base = cfg.base or target:resolve_default_base()
   local args = { "-C=" .. entry.path }
   if base then
     -- `A...` is git shorthand for `A...HEAD`: commits reachable from HEAD

@@ -1517,6 +1517,27 @@ default_args                                    *diffview-config-default_args*
                 }
 <
 
+worktree_overview                               *diffview-config-worktree_overview*
+        Type: `table`, Default: >lua
+                worktree_overview = {
+                  base = nil,
+                  include_bare = false,
+                }
+<
+        Behaviour of |:DiffviewWorktreeOverview|.
+
+        Fields: ~
+            {base} (`string?`)
+                Comparison rev used for every worktree's stats and for the
+                DiffView `<CR>` opens. Nil asks the adapter to resolve a
+                sensible default per worktree (`origin/HEAD` through
+                `master`).
+
+            {include_bare} (`boolean`)
+                Render bare worktrees in the overview. Off by default.
+                Stats are never collected for a bare worktree, and `<CR>`
+                continues to reject them regardless.
+
 hooks                                           *diffview-config-hooks*
         Type: `table<string, function>`, Default: `{}`
 
