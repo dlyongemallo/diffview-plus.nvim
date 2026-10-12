@@ -199,10 +199,13 @@ function WorktreeOverviewView:bind_keys()
   end
 end
 
----Placeholder: resolves the entry under the cursor and (eventually) opens
----a DiffView scoped to that worktree. The real implementation needs the
----base resolution logic from the next commit; for the skeleton we just
----surface the selection so the UI loop is exercisable.
+---Open a DiffView scoped to the worktree on the cursor line.
+---Builds a fresh git adapter at that worktree's toplevel so base probing
+---sees that worktree's refs (branch state can differ across worktrees),
+---then delegates to `diffview.open` via `-C=<path>`. When a default base
+---resolves, the diff is scoped to `<base>...HEAD` (merge-base to HEAD) so
+---only commits unique to the branch show up; otherwise the DiffView opens
+---with no rev arg, falling back to working-tree-vs-HEAD.
 function WorktreeOverviewView:enter_selected()
   -- Read from the current window, not the cached `self.winid`, so a split
   -- that leaves the overview buffer in a different window doesn't crash
@@ -213,7 +216,35 @@ function WorktreeOverviewView:enter_selected()
     utils.info("No worktree on this line.")
     return
   end
-  utils.info(("Selected worktree: %s"):format(entry.path))
+  if entry.is_bare then
+    utils.err("Cannot open a DiffView on a bare worktree.")
+    return
+  end
+  if entry.is_prunable then
+    local msg = "Cannot open a DiffView on a prunable worktree: " .. entry.path
+    if entry.prune_reason then
+      msg = msg .. " (" .. entry.prune_reason .. ")"
+    end
+    utils.err(msg)
+    return
+  end
+
+  local GitAdapter = require("diffview.vcs.adapters.git").GitAdapter
+  local target = GitAdapter({
+    toplevel = entry.path,
+    cpath = entry.path,
+    path_args = {},
+  })
+
+  local base = target:resolve_default_base()
+  local args = { "-C=" .. entry.path }
+  if base then
+    -- `A...` is git shorthand for `A...HEAD`: commits reachable from HEAD
+    -- but not from the merge-base with `A`. Matches the usual review scope.
+    table.insert(args, base .. "...")
+  end
+
+  require("diffview").open(args)
 end
 
 ---@override

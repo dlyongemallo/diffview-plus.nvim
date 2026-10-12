@@ -92,4 +92,67 @@ describe("diffview.scene.views.worktree_overview WorktreeOverviewView", function
       end
     end)
   )
+
+  it(
+    "enter_selected opens a DiffView scoped to the chosen worktree",
+    test_utils.async_test(function()
+      local repo = test_utils.make_repo()
+      local linked = repo .. "-wt"
+
+      local overview
+      local opened
+      local ok, err = pcall(function()
+        run({ "git", "worktree", "add", "-b", "feature/x", linked }, repo)
+        -- A real divergent commit on the linked worktree so the resolved
+        -- `<base>...HEAD` range has something to diff.
+        local f = assert(io.open(linked .. "/added.txt", "w"))
+        f:write("added\n")
+        f:close()
+        test_utils.commit(linked, "add file on feature/x")
+
+        overview = WorktreeOverviewView({ adapter = make_adapter(repo) })
+        overview:open()
+
+        -- Position the cursor on the row for the linked worktree.
+        local target_lnum
+        for i, e in ipairs(overview.entries) do
+          if e.path == linked then
+            target_lnum = i
+            break
+          end
+        end
+        assert.is_not_nil(target_lnum)
+        vim.api.nvim_win_set_cursor(overview.winid, { target_lnum, 0 })
+
+        local overview_tab = overview.tabpage
+        overview:enter_selected()
+
+        local cur_tab = vim.api.nvim_get_current_tabpage()
+        assert.is_not.equals(overview_tab, cur_tab)
+
+        opened = require("diffview.lib").get_current_view()
+        assert.is_not_nil(opened)
+        -- The newly opened view is a DiffView attached to the linked
+        -- worktree's toplevel, not the overview's hub repo.
+        assert.equals(linked, opened.adapter.ctx.toplevel)
+        -- The view is scoped via `<base>...` so the hub branch's commits
+        -- drop out. The hub branch (`main` or `master` depending on the
+        -- host git's `init.defaultBranch`) is the only candidate
+        -- `resolve_default_base` can find in this fixture (no `origin/*`).
+        local base = run({ "git", "rev-parse", "--abbrev-ref", "HEAD" }, repo)
+        assert.equals(base .. "...", opened.rev_arg)
+      end)
+
+      test_utils.close_view(opened)
+      test_utils.close_view(overview)
+      pcall(run, { "git", "worktree", "remove", "--force", linked }, repo)
+      test_utils.cleanup_repo(repo)
+      pcall(vim.fn.delete, linked, "rf")
+      async.await(async.scheduler())
+
+      if not ok then
+        error(err)
+      end
+    end)
+  )
 end)
