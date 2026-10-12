@@ -398,25 +398,80 @@ function GitAdapter:worktree_list()
   return git_worktree.parse_worktree_list(out)
 end
 
----The priority list of revs `resolve_default_base` considers.
-GitAdapter.DEFAULT_BASE_CANDIDATES = {
-  "origin/HEAD",
-  "origin/main",
-  "origin/master",
-  "main",
-  "master",
-}
+---Remotes `resolve_default_base` consults, highest priority first. The
+---`upstream` convention (the user's `origin` is their fork, `upstream`
+---is the canonical repo) takes precedence over `origin` so a feature
+---branch on a fork resolves to the real base rather than the fork's
+---own tip.
+GitAdapter.DEFAULT_BASE_REMOTE_PRIORITY = { "upstream", "origin" }
+
+---Branch names probed on a remote when its symbolic `HEAD` is unset,
+---and locally as a last resort when no remote matches.
+GitAdapter.DEFAULT_BASE_BRANCH_FALLBACKS = { "main", "master" }
+
+---Enumerate the candidate base revs for `toplevel`, in priority order.
+---For each configured remote in `DEFAULT_BASE_REMOTE_PRIORITY`, resolves
+---`refs/remotes/<r>/HEAD` dynamically (via `symbolic-ref`) and prefers
+---its target branch over `<r>/main` / `<r>/master`; otherwise falls back
+---to those names in order. Local `main` / `master` close out the list.
+---Duplicates (e.g., `<r>/HEAD` already pointed at `<r>/main`) are
+---collapsed so the probe batch stays tight.
+---
+---Caveat: `refs/remotes/<r>/HEAD` is seeded at clone time and is NOT
+---refreshed by `git fetch`. If the remote has since renamed its default
+---branch, `git remote set-head <r> --auto` updates the local pointer;
+---without that, the resolver trusts the stale target.
+---@param toplevel string # The worktree root to probe in.
+---@return string[]
+function GitAdapter:_default_base_candidates(toplevel)
+  local log_opt = { label = "GitAdapter:_default_base_candidates", debug_level = 1 }
+  local candidates = {}
+  local seen = {}
+  local function push(rev)
+    if rev and rev ~= "" and not seen[rev] then
+      seen[rev] = true
+      candidates[#candidates + 1] = rev
+    end
+  end
+
+  for _, remote in ipairs(GitAdapter.DEFAULT_BASE_REMOTE_PRIORITY) do
+    local _, cfg_code = self:exec_sync(
+      { "config", "--get", "remote." .. remote .. ".url" },
+      { cwd = toplevel, log_opt = log_opt }
+    )
+    if cfg_code == 0 then
+      local head_out, head_code = self:exec_sync(
+        { "symbolic-ref", "--quiet", "--short", "refs/remotes/" .. remote .. "/HEAD" },
+        { cwd = toplevel, log_opt = log_opt }
+      )
+      if head_code == 0 then
+        push(head_out[1])
+      end
+      for _, branch in ipairs(GitAdapter.DEFAULT_BASE_BRANCH_FALLBACKS) do
+        push(remote .. "/" .. branch)
+      end
+    end
+  end
+  for _, branch in ipairs(GitAdapter.DEFAULT_BASE_BRANCH_FALLBACKS) do
+    push(branch)
+  end
+
+  return candidates
+end
 
 ---Build the (unstarted) `rev-parse` probes `resolve_default_base` would run
 ---and a parser that returns the first candidate whose probe exits 0. Lets a
 ---caller batch base-resolution across many worktrees under one event-loop
----pass. Probes log at debug level so expected misses stay quiet.
+---pass. Discovery of the candidate list (remotes and their `HEAD` targets)
+---runs synchronously here; probes log at debug level so expected misses
+---stay quiet.
 ---@param toplevel string # The worktree root to probe in.
 ---@return diffview.Job[] jobs
 ---@return fun(): string? parse
 function GitAdapter:build_default_base_probe_jobs(toplevel)
+  local candidates = self:_default_base_candidates(toplevel)
   local jobs = {}
-  for _, rev in ipairs(GitAdapter.DEFAULT_BASE_CANDIDATES) do
+  for _, rev in ipairs(candidates) do
     jobs[#jobs + 1] = Job({
       command = self:bin(),
       args = utils.vec_join(self:args(), "rev-parse", "--verify", "--quiet", rev .. "^{commit}"),
@@ -428,7 +483,7 @@ function GitAdapter:build_default_base_probe_jobs(toplevel)
   local function parse()
     for i, j in ipairs(jobs) do
       if j.code == 0 then
-        return GitAdapter.DEFAULT_BASE_CANDIDATES[i]
+        return candidates[i]
       end
     end
     return nil
@@ -438,7 +493,7 @@ function GitAdapter:build_default_base_probe_jobs(toplevel)
 end
 
 ---Pick a reasonable comparison base for "what has this branch added".
----Returns the first candidate from `DEFAULT_BASE_CANDIDATES` whose
+---Returns the first candidate from `_default_base_candidates` whose
 ---`rev-parse` resolves to a commit, or nil when none exist (an orphan
 ---branch, or a repo with no conventional default branch).
 ---@return string? rev
