@@ -1,4 +1,5 @@
 local async = require("diffview.async")
+local DiffView = require("diffview.scene.views.diff.diff_view").DiffView
 local GitAdapter = require("diffview.vcs.adapters.git").GitAdapter
 local WorktreeOverviewView =
   require("diffview.scene.views.worktree_overview.worktree_overview_view").WorktreeOverviewView
@@ -424,6 +425,130 @@ describe("diffview.scene.views.worktree_overview WorktreeOverviewView", function
 
       if not err_ok then
         error(err_err)
+      end
+    end)
+  )
+
+  it(
+    "enter_selected drops the base rev when the worktree HEAD IS the base",
+    test_utils.async_test(function()
+      -- Selecting the main worktree (whose HEAD is the resolved base)
+      -- used to produce `base...HEAD` -> empty range AND hid staged /
+      -- unstaged work behind the empty revision view. The fix drops the
+      -- rev arg in that case so the DiffView falls through to a working-
+      -- tree-vs-HEAD view, which still surfaces an uncommitted change.
+      local repo = test_utils.make_repo()
+
+      local overview
+      local opened
+      local ok, err = pcall(function()
+        -- Stage an uncommitted change so the fallback has something to
+        -- display; a passing test still asserts on the view's shape, but
+        -- a dirty worktree makes the regression concrete.
+        local f = assert(io.open(repo .. "/dirty.txt", "w"))
+        f:write("dirty\n")
+        f:close()
+        run({ "git", "add", "dirty.txt" }, repo)
+
+        overview = WorktreeOverviewView({ adapter = make_adapter(repo) })
+        overview:open()
+
+        -- The repo has exactly one worktree row; select it.
+        assert.equals(1, #overview.entries)
+        vim.api.nvim_win_set_cursor(overview.winid, { 1, 0 })
+        overview:enter_selected()
+
+        opened = require("diffview.lib").get_current_view()
+        assert.is_not_nil(opened)
+        -- The overview and DiffView share `adapter.ctx.toplevel` and both
+        -- have a nil `rev_arg`, so pin that a *different* view opened and
+        -- that it's actually a DiffView before trusting the rev-arg shape.
+        assert.not_equals(overview, opened)
+        assert.is_true(opened:instanceof(DiffView))
+        assert.equals(repo, opened.adapter.ctx.toplevel)
+        -- `rev_arg` on a working-tree-vs-HEAD DiffView is nil / empty;
+        -- a `base...` form would set it to that string.
+        local rev_arg = opened.rev_arg
+        assert.is_true(rev_arg == nil or rev_arg == "")
+        -- The staged `dirty.txt` must surface in the DiffView's staged
+        -- bucket; this is what the fix exists to make visible. `ready`
+        -- flips before `update_files` populates the panel, so wait on
+        -- both.
+        assert.is_true(
+          vim.wait(5000, function()
+            return opened.ready and #opened.files.staged > 0
+          end),
+          "DiffView never surfaced the staged fixture"
+        )
+        local found
+        for _, f in ipairs(opened.files.staged) do
+          if f.path == "dirty.txt" then
+            found = f
+            break
+          end
+        end
+        assert.is_not_nil(found)
+      end)
+
+      test_utils.close_view(opened)
+      test_utils.close_view(overview)
+      test_utils.cleanup_repo(repo)
+      async.await(async.scheduler())
+
+      if not ok then
+        error(err)
+      end
+    end)
+  )
+
+  it(
+    "enter_selected warns and still opens when no base can be resolved",
+    test_utils.async_test(function()
+      -- With `make_repo` renamed off `main`/`master` and no remotes, the
+      -- resolver returns nil. The DiffView used to open silently with the
+      -- working-tree-vs-HEAD fallback, which hides committed changes on
+      -- the branch; we now emit a visible warning so the user knows what
+      -- they are (not) looking at.
+      local repo = test_utils.make_repo()
+
+      local overview
+      local opened
+      local warned
+      local original_notify = vim.notify
+      vim.notify = function(msg, level)
+        if level == vim.log.levels.WARN then
+          warned = msg
+        end
+      end
+
+      local ok, err = pcall(function()
+        run({ "git", "branch", "-m", "feature/only" }, repo)
+
+        overview = WorktreeOverviewView({ adapter = make_adapter(repo) })
+        overview:open()
+
+        vim.api.nvim_win_set_cursor(overview.winid, { 1, 0 })
+        overview:enter_selected()
+
+        assert.is_string(warned)
+        assert.is_truthy(warned:find("No comparison base", 1, true))
+        opened = require("diffview.lib").get_current_view()
+        assert.is_not_nil(opened)
+        -- Without this the test could pass with no DiffView opened: the
+        -- current tabpage is still the overview's, so `get_current_view`
+        -- would hand back `overview` itself.
+        assert.not_equals(overview, opened)
+        assert.is_true(opened:instanceof(DiffView))
+      end)
+
+      vim.notify = original_notify
+      test_utils.close_view(opened)
+      test_utils.close_view(overview)
+      test_utils.cleanup_repo(repo)
+      async.await(async.scheduler())
+
+      if not ok then
+        error(err)
       end
     end)
   )

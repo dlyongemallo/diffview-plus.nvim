@@ -879,9 +879,46 @@ function WorktreeOverviewView:enter_selected()
   -- colocated repo (which `preferred_adapter = "jj"` would otherwise do).
   local args = { "--adapter=git", "-C=" .. entry.path }
   if base then
-    -- `A...` is git shorthand for `A...HEAD`: commits reachable from HEAD
-    -- but not from the merge-base with `A`. Matches the usual review scope.
-    table.insert(args, base .. "...")
+    -- If `HEAD` is reachable from `base` (equal, or behind it with no unique
+    -- commits), the `base...HEAD` range collapses to empty AND the DiffView
+    -- hides any staged/unstaged working-tree changes behind the empty
+    -- revision view. Drop the rev arg so the DiffView falls through to
+    -- working-tree-vs-HEAD, which still surfaces uncommitted work. The
+    -- sha-equality form of this check caught `HEAD == base` but missed the
+    -- ancestor case; `merge-base --is-ancestor` catches both.
+    local _, ancestor_code = target:exec_sync({ "merge-base", "--is-ancestor", "HEAD", base }, {
+      cwd = entry.path,
+      log_opt = { label = "WorktreeOverviewView:enter_selected", debug_level = 1 },
+    })
+    -- Exit 0: HEAD is an ancestor of (or equal to) base; drop the rev arg.
+    -- Exit 1: HEAD has unique commits; append the usual review scope.
+    -- Any other exit (typically 128): git could not resolve `base` or `HEAD`;
+    -- warn and drop the rev arg so DiffView falls through to working-tree
+    -- rather than failing downstream on an unresolvable `base...` range.
+    if ancestor_code == 1 then
+      -- `A...` is git shorthand for `A...HEAD`: commits reachable from HEAD
+      -- but not from the merge-base with `A`. Matches the usual review scope.
+      table.insert(args, base .. "...")
+    elseif ancestor_code ~= 0 then
+      utils.warn(
+        "Could not compare `"
+          .. base
+          .. "` to HEAD in "
+          .. entry.path
+          .. "; showing working-tree changes only. Check `worktree_overview.base`."
+      )
+    end
+  else
+    -- No resolvable base means a branch whose unique work is all committed
+    -- (clean worktree, no `origin/HEAD` / `main` / `master`) opens into an
+    -- empty-looking working-tree view. Warn so the user can set
+    -- `worktree_overview.base` to override instead of staring at an empty
+    -- panel wondering where their commits went.
+    utils.warn(
+      "No comparison base resolved for "
+        .. entry.path
+        .. "; showing working-tree changes only. Set `worktree_overview.base` to override."
+    )
   end
 
   -- Emit before dispatching so a subscriber can prepare per-worktree state
