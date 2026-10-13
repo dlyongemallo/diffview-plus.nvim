@@ -270,6 +270,86 @@ describe("diffview.vcs.file", function()
       end)
     )
 
+    local function with_shadowed_vim_lsp(f)
+      local orig = vim.lsp
+      vim.lsp = setmetatable({}, {
+        __index = function(_, k)
+          error("simulated vim.lsp lazy-load failure for " .. tostring(k))
+        end,
+      })
+      local ok, err = pcall(f)
+      vim.lsp = orig
+      return ok, err
+    end
+
+    it(
+      "LspAttach callback contains vim.lsp lazy-load failures",
+      helpers.async_test(function()
+        local file = make_commit_file()
+        async.await(file:create_buffer())
+
+        -- Intercept the scheduled callback so we can invoke it under the
+        -- shadowed `vim.lsp` instead of racing the event loop.
+        local scheduled
+        local orig_schedule = vim.schedule
+        vim.schedule = function(f)
+          scheduled = f
+        end
+
+        vim.api.nvim_exec_autocmds("LspAttach", {
+          buffer = file.bufnr,
+          data = { client_id = 1 },
+        })
+
+        vim.schedule = orig_schedule
+        assert.is_function(scheduled)
+
+        local ok, err = with_shadowed_vim_lsp(scheduled)
+
+        assert.is_true(
+          ok,
+          "LspAttach scheduled callback let a vim.lsp error escape: " .. tostring(err)
+        )
+      end)
+    )
+
+    it(
+      "attach_buffer contains vim.lsp lazy-load failures for non-LOCAL revs",
+      helpers.async_test(function()
+        local file = make_commit_file()
+        async.await(file:create_buffer())
+
+        local ok, err = with_shadowed_vim_lsp(function()
+          file:attach_buffer()
+        end)
+
+        assert.is_true(
+          ok,
+          "File:attach_buffer let a vim.lsp error escape: " .. tostring(err)
+        )
+
+        file:detach_buffer()
+      end)
+    )
+
+    it(
+      "detach_buffer contains vim.lsp lazy-load failures for non-LOCAL revs",
+      helpers.async_test(function()
+        local file = make_commit_file()
+        async.await(file:create_buffer())
+        file:attach_buffer()
+
+        local ok, err = with_shadowed_vim_lsp(function()
+          file:detach_buffer()
+        end)
+
+        assert.is_true(
+          ok,
+          "File:detach_buffer let a vim.lsp error escape: " .. tostring(err)
+        )
+      end)
+    )
+
     it(
       "sets buftype=acwrite on stage-0 diffview:// buffers",
       helpers.async_test(function()

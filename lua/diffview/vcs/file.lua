@@ -410,7 +410,13 @@ File.create_buffer = async.wrap(function(self, callback)
         end
         vim.schedule(function()
           if api.nvim_buf_is_valid(ev.buf) then
-            pcall(vim.lsp.buf_detach_client, ev.buf, client_id)
+            -- Wrap the indexed call so pcall also covers the lazy-load of
+            -- `vim.lsp` itself: without the wrapper, resolving the function
+            -- (`vim.lsp.buf_detach_client`) happens before pcall begins,
+            -- and any error from Neovim's lazy module loader escapes it.
+            pcall(function()
+              vim.lsp.buf_detach_client(ev.buf, client_id)
+            end)
           end
         end)
       end,
@@ -625,7 +631,11 @@ function File:attach_buffer(force, opt)
       -- computed for the current file version, which may differ from the
       -- revision shown in the diff buffer.
       if self.rev and self.rev.type ~= RevType.LOCAL then
-        pcall(vim.lsp.inlay_hint.enable, false, { bufnr = self.bufnr })
+        -- Wrap the indexed call so pcall also covers the lazy-load of
+        -- `vim.lsp`; see the matching note at `buf_detach_client` above.
+        pcall(function()
+          vim.lsp.inlay_hint.enable(false, { bufnr = self.bufnr })
+        end)
       end
 
       File.attached[self.bufnr] = state
@@ -712,7 +722,9 @@ function File:detach_buffer()
 
       -- Re-enable inlay hints for non-LOCAL buffers (if they were disabled).
       if self.rev and self.rev.type ~= RevType.LOCAL then
-        pcall(vim.lsp.inlay_hint.enable, true, { bufnr = self.bufnr })
+        pcall(function()
+          vim.lsp.inlay_hint.enable(true, { bufnr = self.bufnr })
+        end)
       end
 
       File.attached[self.bufnr] = nil
