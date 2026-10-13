@@ -372,31 +372,30 @@ describe("diffview.scene.views.worktree_overview hooks", function()
       local repo = test_utils.make_repo()
 
       local view
-      local provider_calls = 0
-      local provider = function()
-        provider_calls = provider_calls + 1
-        return "x"
+      local function count_listeners()
+        return #(DiffviewGlobal.emitter.event_map["refresh_worktree_overview_status"] or {})
       end
 
       local ok, err = pcall(function()
-        overview.register_status_provider(provider)
+        local baseline = count_listeners()
         view = WorktreeOverviewView({ adapter = make_adapter(repo) })
         view:open()
         async.await(async.schedule_now())
 
-        local calls_before_close = provider_calls
+        -- Sanity: the view installed its listener on the global emitter.
+        assert.equals(baseline + 1, count_listeners())
+
         test_utils.close_view(view)
         view = nil
 
-        -- With no view listening, firing the event should not reach the
-        -- provider at all. Any invocation here would indicate the view's
-        -- `close` failed to detach the global-emitter subscription.
-        DiffviewGlobal.emitter:emit("refresh_worktree_overview_status")
-        async.await(async.schedule_now())
-        assert.equals(calls_before_close, provider_calls)
+        -- The subscription is gone, so the listener count is back to
+        -- baseline. A behavioural check on the provider will not catch a
+        -- leaked subscription here: `close` deletes the buffer, so the
+        -- leaked handler would short-circuit on its `nvim_buf_is_valid`
+        -- guard before touching the provider.
+        assert.equals(baseline, count_listeners())
       end)
 
-      overview.clear_status_providers()
       if view then
         test_utils.close_view(view)
       end
