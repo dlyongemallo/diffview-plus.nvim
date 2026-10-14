@@ -84,9 +84,18 @@ describe("shared null-buffer keymaps", function()
             end, 10),
             "Could not stage b.txt from the empty pane"
           )
-          helpers.eq(
-            status .. "\tb.txt",
-            helpers.run({ "git", "diff", "--cached", "--name-status" }, repo)
+          -- The view's staged list is populated from one `git diff --cached`
+          -- subprocess inside `tracked_files`; the assertion below is a
+          -- separate subprocess reading the same index. Poll until the two
+          -- agree so we don't race the index write between the two reads.
+          local expected = status .. "\tb.txt"
+          local actual
+          assert.True(
+            vim.wait(5000, function()
+              actual = helpers.run({ "git", "diff", "--cached", "--name-status" }, repo)
+              return actual == expected
+            end, 50),
+            ("git index did not reflect the stage of b.txt; last read: %q"):format(actual or "")
           )
         end)
 
