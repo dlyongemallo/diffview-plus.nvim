@@ -443,6 +443,21 @@ function Job:sync(timeout)
   if not ok then
     if status == -1 then
       self:kill(-1)
+      -- Give SIGTERM a bounded window to reap the subprocess before
+      -- surrendering, so a timed-out job does not leave a child that
+      -- outlives this Neovim. If the direct child ignores SIGTERM, fall
+      -- back to SIGKILL. Grandchildren (`sh -c "...sleep..."` and the like)
+      -- are reparented past us regardless; this cleans up the common case.
+      if not vim.wait(500, function()
+        return self:is_done()
+      end, 10) then
+        if self.handle and not self.handle:is_closing() then
+          pcall(self.handle.kill, self.handle, "sigkill")
+        end
+        vim.wait(500, function()
+          return self:is_done()
+        end, 10)
+      end
       return false, "Synchronous job timed out!"
     elseif status == -2 then
       return false, "Synchronous job got interrupted!"
