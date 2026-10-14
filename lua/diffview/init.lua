@@ -195,33 +195,45 @@ end
 ---enumerates every worktree regardless of which one the adapter is bound
 ---to, so attaching to any linked worktree still yields the full overview,
 ---including the bare entry.
----@return GitAdapter?
+---
+---Returns `(nil, nil)` when the directory is not a git repo at all. When
+---the directory IS a git repo but no linked worktree is available to bind
+---to (standalone bare repo), returns `(nil, "bare_no_linked")` so the
+---caller can emit a bare-repo-specific error instead of the generic one.
+---@return GitAdapter? adapter
+---@return string? hint # One of `"bare_no_linked"`, or nil.
 local function resolve_git_overview_adapter()
   local cwd = vim.uv.cwd()
   if not cwd then
-    return nil
+    return nil, nil
   end
   local git_cmd = config.get_config().git_cmd
   local _, probe_code = utils.job(utils.flatten({ git_cmd, { "rev-parse", "--git-dir" } }), cwd)
   if probe_code ~= 0 then
-    return nil
+    return nil, nil
   end
   local out, code =
     utils.job(utils.flatten({ git_cmd, { "worktree", "list", "--porcelain" } }), cwd)
   if code ~= 0 then
-    return nil
+    return nil, nil
   end
   local git = require("diffview.vcs.adapters.git")
   local entries = require("diffview.vcs.adapters.git.worktree").parse_worktree_list(out)
+  local saw_bare = false
   for _, entry in ipairs(entries) do
-    if not entry.is_bare then
+    if entry.is_bare then
+      saw_bare = true
+    else
       local err, adapter = git.GitAdapter.create(entry.path, {}, nil)
       if not err then
-        return adapter
+        return adapter, nil
       end
     end
   end
-  return nil
+  if saw_bare then
+    return nil, "bare_no_linked"
+  end
+  return nil, nil
 end
 
 ---Open the cross-worktree overview for the current repository.
@@ -236,11 +248,21 @@ function M.worktree_overview()
   -- still a valid `cwd_path` because the Git worktree shares that path.
   local adapter = M.get_adapter()
   local cwd_path = adapter and adapter.ctx and adapter.ctx.toplevel or nil
+  local hint
   if not adapter or adapter.config_key ~= "git" then
-    adapter = resolve_git_overview_adapter() or adapter
+    local resolved
+    resolved, hint = resolve_git_overview_adapter()
+    adapter = resolved or adapter
   end
   if not adapter then
-    utils.err("DiffviewWorktreeOverview must be run from inside a git worktree or bare repo.")
+    if hint == "bare_no_linked" then
+      utils.err(
+        "DiffviewWorktreeOverview: standalone bare repo with no linked worktrees. "
+          .. "Add one via `git worktree add` to use the overview."
+      )
+    else
+      utils.err("DiffviewWorktreeOverview must be run from inside a git worktree or bare repo.")
+    end
     return
   end
   if adapter.config_key ~= "git" then
