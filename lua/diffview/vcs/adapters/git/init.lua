@@ -417,6 +417,13 @@ GitAdapter.DEFAULT_BASE_BRANCH_FALLBACKS = { "main", "master" }
 ---Duplicates (e.g., `<r>/HEAD` already pointed at `<r>/main`) are
 ---collapsed so the probe batch stays tight.
 ---
+---Discovery runs synchronously on the main thread: up to two `git config`
+---+ `git symbolic-ref` round-trips per remote in
+---`DEFAULT_BASE_REMOTE_PRIORITY`. The call set is small and the probes
+---batched by `build_default_base_probe_jobs` are what dominate; still,
+---callers that need overview-wide batching across many worktrees should
+---note that this discovery pass is not itself parallelized.
+---
 ---Caveat: `refs/remotes/<r>/HEAD` is seeded at clone time and is NOT
 ---refreshed by `git fetch`. If the remote has since renamed its default
 ---branch, `git remote set-head <r> --auto` updates the local pointer;
