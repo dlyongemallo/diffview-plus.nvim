@@ -216,6 +216,25 @@ describe("diffview.scene.views.worktree_overview WorktreeOverviewView", function
         local base = run({ "git", "rev-parse", "--abbrev-ref", "HEAD" }, repo)
         assert.equals(base .. "...", opened.rev_arg)
 
+        -- The committed `added.txt` must surface in the DiffView's file
+        -- list under the `<base>...HEAD` range (populated into `working`
+        -- for revision diffs). `ready` flips before `update_files` fills
+        -- the panel, so wait on both.
+        assert.is_true(
+          vim.wait(5000, function()
+            return opened.ready and #opened.files.working > 0
+          end),
+          "DiffView never surfaced the committed `added.txt`"
+        )
+        local found_added
+        for _, f in ipairs(opened.files.working) do
+          if f.path == "added.txt" then
+            found_added = f
+            break
+          end
+        end
+        assert.is_not_nil(found_added)
+
         -- Overview should have picked up the extra commit as `ahead = 1`
         -- against the resolved default base.
         local linked_entry
@@ -367,6 +386,57 @@ describe("diffview.scene.views.worktree_overview WorktreeOverviewView", function
         assert.equals(1, #lines)
         assert.is_truthy(lines[1]:find("Scanning worktrees...", 1, true))
         assert.is_truthy(lines[1]:find("2.5s", 1, true))
+      end)
+
+      test_utils.close_view(view)
+      test_utils.cleanup_repo(repo)
+      async.await(async.scheduler())
+
+      if not ok then
+        error(err)
+      end
+    end)
+  )
+
+  it(
+    "shows the Scanning placeholder before refresh completes and clears it after",
+    test_utils.async_test(function()
+      -- Covers the full placeholder lifecycle: `init_layout` paints the
+      -- static frame, `_start_spinner` arms the timer, `refresh` runs, and
+      -- the final `render` replaces the placeholder with the worktree rows.
+      -- A buffer-contents check at the moment `refresh` is entered catches
+      -- a regression where the placeholder is never painted (or painted
+      -- after refresh, so the user never sees it).
+      local repo = test_utils.make_repo()
+
+      local view
+      local during_refresh = {}
+      local ok, err = pcall(function()
+        view = WorktreeOverviewView({ adapter = make_adapter(repo) })
+        -- Snapshot buffer state the moment `refresh` starts; `post_open`
+        -- has already painted the placeholder and armed the spinner by
+        -- this point.
+        local original_refresh = view.refresh
+        view.refresh = function(self)
+          during_refresh.lines = vim.api.nvim_buf_get_lines(self.bufnr, 0, -1, false)
+          during_refresh.spinner_timer = self._spinner_timer
+          during_refresh.spinner_start = self._spinner_start
+          return original_refresh(self)
+        end
+        view:open()
+
+        -- Mid-refresh: buffer shows the placeholder and the spinner is
+        -- live.
+        assert.is_truthy(during_refresh.lines[1]:find("Scanning worktrees...", 1, true))
+        assert.is_not_nil(during_refresh.spinner_timer)
+        assert.is_not_nil(during_refresh.spinner_start)
+
+        -- Post-refresh: the final overview replaces the placeholder and
+        -- the spinner has been stopped.
+        local final_lines = vim.api.nvim_buf_get_lines(view.bufnr, 0, -1, false)
+        assert.is_falsy((final_lines[1] or ""):find("Scanning worktrees...", 1, true))
+        assert.is_nil(view._spinner_timer)
+        assert.is_nil(view._spinner_start)
       end)
 
       test_utils.close_view(view)
