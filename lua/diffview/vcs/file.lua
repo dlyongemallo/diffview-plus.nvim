@@ -589,11 +589,11 @@ end
 function File:attach_buffer(force, opt)
   if self.bufnr then
     local new_opt = false
-    local cur_state = File.attached[self.bufnr] or {}
-    local state = prepare_attach_opt(cur_state, opt or {})
+    local cur_state = File.attached[self.bufnr]
+    local state = prepare_attach_opt(cur_state or {}, opt or {})
 
-    if opt then
-      new_opt = not vim.deep_equal(cur_state or {}, opt)
+    if opt and cur_state then
+      new_opt = not vim.deep_equal(cur_state, opt)
     end
 
     if force or new_opt or not cur_state then

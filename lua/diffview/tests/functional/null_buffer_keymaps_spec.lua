@@ -108,4 +108,50 @@ describe("shared null-buffer keymaps", function()
       end)
     )
   end
+
+  -- Regression: on a dirty -> clean refresh, `file_safeguard` detaches the
+  -- old entries and swaps both windows to the shared null buffer via
+  -- `open_null`. The first `attach_buffer` call on the null buffer must set
+  -- up the view keymaps.
+  it(
+    "attaches view keymaps to the null buffer after a dirty -> clean refresh",
+    helpers.async_test(function()
+      local repo = helpers.make_repo()
+      local view
+      local ok, err = pcall(function()
+        helpers.write(repo, "a.txt", { "a" })
+        helpers.commit(repo, "base")
+        helpers.write(repo, "a.txt", { "a", "b" })
+
+        view = assert(lib.diffview_open({ "-C" .. repo }))
+        view:open()
+        assert.True(vim.wait(5000, function()
+          return view.ready and view.files:len() == 1
+        end, 10))
+
+        helpers.run({ "git", "checkout", "--", "." }, repo)
+
+        view:update_files()
+        assert.True(vim.wait(5000, function()
+          return view.nulled and view.files:len() == 0
+        end, 10))
+
+        local layout = view.cur_layout --[[@as Diff2 ]]
+        for _, win in ipairs({ layout.a, layout.b }) do
+          local buf = vim.api.nvim_win_get_buf(win.id)
+          assert.equals(File.NULL_FILE.bufnr, buf)
+          local arg = vim.api.nvim_buf_call(buf, function()
+            return vim.fn.maparg(" s", "n", false, true)
+          end)
+          assert.is_function(arg.callback)
+        end
+      end)
+
+      helpers.close_view(view)
+      helpers.cleanup_repo(repo)
+      if not ok then
+        error(err)
+      end
+    end)
+  )
 end)
