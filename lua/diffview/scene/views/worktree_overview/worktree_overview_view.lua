@@ -759,22 +759,22 @@ local function pad(ctx, n)
   end
 end
 
----Marker used when a probe is unavailable (e.g., no base resolved, or a
----sub-probe exited non-zero). Zero would silently misrepresent the row as
----clean, so each affected cell shows a dim dash instead of a digit.
-local UNKNOWN = "─"
+---Probe failed: real count unknown. Visually loud so a stale probe can't
+---pass for a clean row.
+local UNKNOWN = "×"
 
----Resolve a counter cell's `(text, display_width, hl)` tuple. When the
----probe is unavailable the cell collapses to a dim `UNKNOWN` marker
----(display width 1); otherwise it uses the formatted value with the
----caller-supplied highlight.
----@param unknown boolean
+---The question doesn't apply (e.g., diff cells on a row whose
+---`base...HEAD` has no merge base). Quieter than `UNKNOWN` since nothing
+---broke.
+local NA = "·"
+
+---@param marker? string # `UNKNOWN`, `NA`, or nil for "render the number".
 ---@param n integer
 ---@param hl string
 ---@return string text, integer width, string hl
-local function fmt_cell(unknown, n, hl)
-  if unknown then
-    return UNKNOWN, 1, HL.dim
+local function fmt_cell(marker, n, hl)
+  if marker then
+    return marker, 1, HL.dim
   end
   local s = tostring(n)
   return s, #s, hl
@@ -800,39 +800,42 @@ local function push_stats_cells(ctx, e, w)
   end
   local s = e.stats ---@cast s GitAdapter.WorktreeStats
 
-  -- Branch counters: nil base means the probes were skipped entirely, so
-  -- ahead/behind would silently read as 0; `errors` lists sub-probes that
-  -- exited non-zero. Either case renders the affected cells as unknown
-  -- so a stale probe doesn't masquerade as a clean row.
-  local branch_unknown = s.base == nil or vim.tbl_contains(s.errors, "rev-list")
-  local diff_unknown = s.base == nil or vim.tbl_contains(s.errors, "diff")
+  -- Nil base means probes were skipped; without a marker the row would
+  -- read as clean. Diff has the extra `no_merge_base` outcome.
+  local branch_marker = (s.base == nil or vim.tbl_contains(s.errors, "rev-list")) and UNKNOWN or nil
+  local diff_marker
+  if s.base == nil or vim.tbl_contains(s.errors, "diff") then
+    diff_marker = UNKNOWN
+  elseif s.no_merge_base then
+    diff_marker = NA
+  end
   local status_unknown = vim.tbl_contains(s.errors, "status")
 
   local text, cw, hl
-  text, cw, hl = fmt_cell(branch_unknown, s.ahead, HL.counter)
+  text, cw, hl = fmt_cell(branch_marker, s.ahead, HL.counter)
   pad(ctx, w.ahead - cw)
   push(ctx, "↑", HL.arrow)
   push(ctx, text, hl)
   push(ctx, " ")
 
-  text, cw, hl = fmt_cell(branch_unknown, s.behind, HL.counter)
+  text, cw, hl = fmt_cell(branch_marker, s.behind, HL.counter)
   pad(ctx, w.behind - cw)
   push(ctx, "↓", HL.arrow)
   push(ctx, text, hl)
   push(ctx, "  ")
 
-  text, cw, hl = fmt_cell(diff_unknown, s.changed_files, HL.counter)
+  text, cw, hl = fmt_cell(diff_marker, s.changed_files, HL.counter)
   pad(ctx, w.files - cw)
   push(ctx, text, hl)
   push(ctx, "f", HL.files_suffix)
   push(ctx, "  ")
 
-  text, cw, hl = fmt_cell(diff_unknown, s.insertions, HL.insertions)
+  text, cw, hl = fmt_cell(diff_marker, s.insertions, HL.insertions)
   pad(ctx, w.ins - cw)
   push(ctx, "+" .. text, hl)
   push(ctx, " ")
 
-  text, cw, hl = fmt_cell(diff_unknown, s.deletions, HL.deletions)
+  text, cw, hl = fmt_cell(diff_marker, s.deletions, HL.deletions)
   pad(ctx, w.dels - cw)
   push(ctx, "-" .. text, hl)
   push(ctx, "  ")
@@ -852,7 +855,8 @@ local function push_stats_cells(ctx, e, w)
     return
   end
   local function dirty(count, width, hl_known, suffix)
-    local t, w1, h = fmt_cell(status_unknown, count, count > 0 and hl_known or HL.dim)
+    local marker = status_unknown and UNKNOWN or nil
+    local t, w1, h = fmt_cell(marker, count, count > 0 and hl_known or HL.dim)
     pad(ctx, width - w1)
     push(ctx, t, h)
     push(ctx, suffix, h)

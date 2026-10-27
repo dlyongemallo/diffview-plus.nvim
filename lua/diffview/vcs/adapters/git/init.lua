@@ -522,7 +522,8 @@ end
 ---@field staged integer # Index-vs-HEAD changes from `git status --porcelain`.
 ---@field unstaged integer # Worktree-vs-index changes.
 ---@field untracked integer
----@field errors string[] # Tags of probes that returned non-zero: `"rev-list"`, `"diff"`, `"status"`. Non-empty means the counts are partial; callers that would act destructively on a seemingly clean worktree must treat that as unknown state. A `nil` base is not an error (branch probes are skipped and `errors` stays empty for them).
+---@field no_merge_base boolean # `base...HEAD` has no merge base (unrelated histories). The diff counts are undefined; `errors` stays clear of `"diff"` since the probe answered a well-defined question. Branch counters are unaffected.
+---@field errors string[] # Tags of probes that returned non-zero: `"rev-list"`, `"diff"`, `"status"`. Non-empty means the counts are partial; callers that would act destructively on a seemingly clean worktree must treat that as unknown state. A `nil` base is not an error (branch probes are skipped and `errors` stays empty); nor is `no_merge_base`.
 
 ---Build the (unstarted) `Job`s that `worktree_stats` would run and a parser
 ---that reads their outputs into a `WorktreeStats`. Returned jobs are not
@@ -575,6 +576,7 @@ function GitAdapter:build_stats_probe_jobs(toplevel, base)
       staged = 0,
       unstaged = 0,
       untracked = 0,
+      no_merge_base = false,
       errors = {},
     }
 
@@ -607,7 +609,13 @@ function GitAdapter:build_stats_probe_jobs(toplevel, base)
           end
         end
       else
-        table.insert(stats.errors, "diff")
+        -- `A...HEAD` without a merge base (unrelated histories) is a
+        -- well-defined n/a, not a probe error -- keep it off `errors`.
+        if table.concat(diff_job.stderr, "\n"):find("no merge base", 1, true) then
+          stats.no_merge_base = true
+        else
+          table.insert(stats.errors, "diff")
+        end
       end
     end
 

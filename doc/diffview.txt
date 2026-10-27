@@ -646,9 +646,9 @@ Column legend ~
                                            fallbacks; see `base` in
                                            |diffview-config-worktree_overview|).
                             `Nf`             Files changed in `base...HEAD`
-                                           per `git diff --shortstat`.
+                                           per `git diff --numstat`.
                             `+N` `-N`          Insertion / deletion counts
-                                           from the same shortstat.
+                                           from the same numstat.
                             `Ns` `Nu` `N?`       Dirty trio from
                                            `git status --porcelain`:
                                            staged (index-vs-HEAD),
@@ -664,6 +664,26 @@ Column legend ~
                                            common parent directory of
                                            every row stripped so the
                                            rows read as a tidy list.
+
+                        Numeric cells can collapse to one of two dim
+                        single-column markers in place of a digit:
+
+                            `×`              The probe failed, so the real
+                                           count is unknown. Treating it
+                                           as zero would misrepresent the
+                                           row as clean, so each affected
+                                           cell shows this instead.
+                            `·`              The question doesn't apply.
+                                           Currently only the diff cells
+                                           (`Nf`, `+N`, `-N`) use this,
+                                           on branches whose history is
+                                           unrelated to the resolved
+                                           base so `base...HEAD` has no
+                                           merge base and the diff is
+                                           undefined. Ahead / behind
+                                           still render since
+                                           `rev-list --left-right`
+                                           needs no merge base.
 
                                                 *:DiffviewLog*
 :DiffviewLog            Open the debug log.

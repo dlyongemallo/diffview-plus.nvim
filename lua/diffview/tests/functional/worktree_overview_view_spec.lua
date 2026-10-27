@@ -303,6 +303,7 @@ describe("diffview.scene.views.worktree_overview WorktreeOverviewView", function
             staged = 0,
             unstaged = 0,
             untracked = 0,
+            no_merge_base = false,
             errors = { "status" },
           },
         }
@@ -340,18 +341,18 @@ describe("diffview.scene.views.worktree_overview WorktreeOverviewView", function
         -- and the suffix letters `s`/`u`/`?` live only on this trio -- so
         -- a hit on each proves the `status_unknown` branch fired. Plain
         -- find keeps the `?` from being treated as a pattern.
-        assert.is_truthy(errored_line:find("─s", 1, true))
-        assert.is_truthy(errored_line:find("─u", 1, true))
-        assert.is_truthy(errored_line:find("─?", 1, true))
+        assert.is_truthy(errored_line:find("×s", 1, true))
+        assert.is_truthy(errored_line:find("×u", 1, true))
+        assert.is_truthy(errored_line:find("×?", 1, true))
 
         -- Fixture-independent check: anything the two rows share (nil
         -- base, probe errors on branch/diff) adds the same number of
-        -- dashes to both lines, so the delta isolates the trio's own
-        -- contribution. The errored row should carry exactly three
-        -- more dashes than the clean row.
-        local _, clean_dashes = clean_line:gsub("─", "")
-        local _, errored_dashes = errored_line:gsub("─", "")
-        assert.equals(3, errored_dashes - clean_dashes)
+        -- `UNKNOWN` markers to both lines, so the delta isolates the
+        -- trio's own contribution. The errored row should carry exactly
+        -- three more markers than the clean row.
+        local _, clean_markers = clean_line:gsub("×", "")
+        local _, errored_markers = errored_line:gsub("×", "")
+        assert.equals(3, errored_markers - clean_markers)
       end)
 
       test_utils.close_view(view)
