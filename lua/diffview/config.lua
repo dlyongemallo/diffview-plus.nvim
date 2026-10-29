@@ -649,9 +649,19 @@ M.defaults = {
     include_bare = false,
   },
 
+  ---@class DiffviewDiffBufCtx.Rev
+  ---@field type "LOCAL"|"COMMIT"|"STAGE"|"CUSTOM" What the buffer holds: the working tree, a commit, an index stage, or content outside any VCS.
+  ---@field commit? string Full object name of the commit, for `COMMIT`.
+  ---@field stage? integer Index stage (0 index, 1 common ancestor, 2 ours, 3 theirs), for `STAGE`.
+  ---@field tracks_head boolean The rev was resolved from HEAD and follows it when HEAD moves.
+
   ---@class DiffviewDiffBufCtx
   ---@field symbol string Layout-window symbol ("a"|"b"|"c"|"d").
   ---@field layout_name string Concrete layout, e.g. "diff2_horizontal".
+  ---@field rev DiffviewDiffBufCtx.Rev The revision the buffer shows.
+  ---@field path string File path relative to `toplevel`.
+  ---@field toplevel string Root of the repository. Outside a repository, the directory `path` is relative to.
+  ---@field adapter? "git"|"hg"|"jj"|"p4" VCS adapter, which determines how `rev.commit` is interpreted. Nil outside a repository (e.g. `:DiffviewDiffFiles`).
 
   ---@class DiffviewHooks
   ---@field view_opened? fun(view: View)

@@ -1789,13 +1789,38 @@ hooks                                           *diffview-config-hooks*
                 Callback Parameters: ~
                     {bufnr} (`integer`)
                         The buffer number of the new buffer.
-                    {ctx} (`table`)
+                    {ctx} (`table`)                     *diffview-diff-buf-ctx*
                         • {symbol} (string)
                           A symbol that identifies the window's position in
                           the layout. These symbols correspond with the
                           figures under |diffview-config-view.x.layout|.
                         • {layout_name} (string)
                           The name of the current layout.
+                        • {rev} (table)
+                          The revision the buffer shows:
+                          • {type} (string)
+                            `"LOCAL"` (the working tree), `"COMMIT"`,
+                            `"STAGE"` (an index stage), or `"CUSTOM"`
+                            (content outside any VCS).
+                          • {commit} (string|nil)
+                            The full object name, for `"COMMIT"`.
+                          • {stage} (integer|nil)
+                            The stage number, for `"STAGE"`: 0 for the
+                            index, 1 for the common ancestor, 2 for ours
+                            and 3 for theirs.
+                          • {tracks_head} (boolean)
+                            Whether the revision was resolved from HEAD
+                            and follows it when HEAD moves.
+                        • {path} (string)
+                          The file path, relative to {toplevel}.
+                        • {toplevel} (string)
+                          The root of the repository. Outside a repository,
+                          the directory {path} is relative to.
+                        • {adapter} (string|nil)
+                          The VCS adapter: `"git"`, `"hg"`, `"jj"` or `"p4"`.
+                          It determines how {rev.commit} is interpreted.
+                          `nil` outside a repository (e.g.
+                          |:DiffviewDiffFiles|).
 
             {diff_buf_win_enter} (`fun(bufnr: integer, winid: integer, ctx: table)`)
                 Emitted after a diff buffer is displayed in a window.
@@ -1812,12 +1837,7 @@ hooks                                           *diffview-config-hooks*
                         The window id of window inside which the buffer was
                         displayed.
                     {ctx} (`table`)
-                        • {symbol} (string)
-                          A symbol that identifies the window's position in
-                          the layout. These symbols correspond with the
-                          figures under |diffview-config-view.x.layout|.
-                        • {layout_name} (string)
-                          The name of the current layout.
+                        See |diffview-diff-buf-ctx|.
 
         Examples: >lua
                 hooks = {
@@ -2501,6 +2521,9 @@ For information on how to use User autocommands, see |User|.
                       such that |:setlocal| will apply settings to the
                       relevant buffer / window.
 
+                      The autocommand's `data` holds the fields of
+                      |diffview-diff-buf-ctx| and `bufnr`.
+
 `DiffviewDiffBufWinEnter`
                       Fires after a diff buffer is displayed in a window.
 
@@ -2508,6 +2531,9 @@ For information on how to use User autocommands, see |User|.
                       buffer and the correct diff window as the current window
                       such that |:setlocal| will apply settings to the
                       relevant buffer / window.
+
+                      The autocommand's `data` holds the fields of
+                      |diffview-diff-buf-ctx|, `bufnr` and `winid`.
 
 `DiffviewFilesStaged`   Fires after files have been staged or unstaged from
                       within a DiffView (e.g. via the stage/unstage actions).

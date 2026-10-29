@@ -125,11 +125,19 @@ function M.init()
   DiffviewGlobal.emitter:on("view_post_layout", function(_)
     api.nvim_exec_autocmds("User", { pattern = "DiffviewViewPostLayout", modeline = false })
   end)
-  DiffviewGlobal.emitter:on("diff_buf_read", function(_)
-    api.nvim_exec_autocmds("User", { pattern = "DiffviewDiffBufRead", modeline = false })
+  DiffviewGlobal.emitter:on("diff_buf_read", function(_, bufnr, ctx)
+    api.nvim_exec_autocmds("User", {
+      pattern = "DiffviewDiffBufRead",
+      modeline = false,
+      data = vim.tbl_extend("force", ctx, { bufnr = bufnr }),
+    })
   end)
-  DiffviewGlobal.emitter:on("diff_buf_win_enter", function(_)
-    api.nvim_exec_autocmds("User", { pattern = "DiffviewDiffBufWinEnter", modeline = false })
+  DiffviewGlobal.emitter:on("diff_buf_win_enter", function(_, bufnr, winid, ctx)
+    api.nvim_exec_autocmds("User", {
+      pattern = "DiffviewDiffBufWinEnter",
+      modeline = false,
+      data = vim.tbl_extend("force", ctx, { bufnr = bufnr, winid = winid }),
+    })
   end)
   DiffviewGlobal.emitter:on("selection_changed", function(_)
     api.nvim_exec_autocmds("User", { pattern = "DiffviewSelectionChanged", modeline = false })
