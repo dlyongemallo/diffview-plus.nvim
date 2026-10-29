@@ -434,9 +434,8 @@ function DiffView:set_revs(new_rev_arg, opts)
 end
 
 ---Collect paths of file entries whose STAGE-rev sub-buffers have unsaved
----edits. Used by `close` (via `can_close`) to decide whether to abort, and
----by the BufWritePost auto-close retry path to silently re-check the gate
----without warning on every save.
+---edits. `can_close` aborts a guarded close while any exist, so that an
+---auto-close never discards edits the user has yet to apply to the index.
 ---@return string[]
 function DiffView:_modified_stage_paths()
   local paths = {}
@@ -461,6 +460,9 @@ end
 ---abort. Use this from callers that have visible side effects which must be
 ---ordered around the close (e.g. `goto_file_edit_close` navigates first and
 ---would otherwise strand the user if the close aborts).
+---
+---`opts.silent` suppresses that warning, for callers driven by events outside
+---the user's control, which would otherwise report it on every one.
 ---@param opts? diffview.View.CloseOpts
 ---@return boolean ok
 function DiffView:can_close(opts)
@@ -475,11 +477,13 @@ function DiffView:can_close(opts)
 
   local modified = self:_modified_stage_paths()
   if #modified > 0 then
-    utils.err(
-      ("Stage buffer(s) have unsaved changes: %s. Use :DiffviewClose! to discard, or :write to apply to the index."):format(
-        table.concat(modified, ", ")
+    if not opts.silent then
+      utils.err(
+        ("Stage buffer(s) have unsaved changes: %s. Use :DiffviewClose! to discard, or :write to apply to the index."):format(
+          table.concat(modified, ", ")
+        )
       )
-    )
+    end
     return false
   end
   return true
@@ -488,6 +492,7 @@ end
 ---@override
 ---@param opts? diffview.View.CloseOpts # `force = true` (default) bypasses the
 ---unsaved-stage-edit check, mirroring the `:DiffviewClose!` semantics.
+---`silent = true` aborts without reporting the unsaved edits.
 ---@return boolean closed # `false` if the close was aborted.
 function DiffView:close(opts)
   if not self:can_close(opts) then
