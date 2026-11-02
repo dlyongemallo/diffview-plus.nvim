@@ -41,6 +41,7 @@ function FileHistoryView:init(opt)
   self.pinned_path = opt.pinned_path
   self.no_panel = opt.no_panel
   self._pinned_b_files = {}
+  self.steps_through_revisions = true
 
   self:super({
     panel = FileHistoryPanel({

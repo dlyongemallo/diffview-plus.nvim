@@ -38,6 +38,7 @@ end
 ---@field layouts table<Layout, Layout>
 ---@field no_panel? boolean # Per-view `--no-panel` override. When set, takes precedence over the panel's `show` config (`nil` means defer to config).
 ---@field cursor_map table<string, StandardView.CarryState> # Repo-relative path → the cursor and viewport last seen for that path. Consumed the next time the path opens.
+---@field steps_through_revisions? boolean # Whether the view lists one file across revisions, so that opening an entry can be a step to another revision of the file just left. See `_is_revision_step`.
 ---@field package _carry_lnum StandardView.CarryLnum? # A line resolved by a caller that knows it better than a diff between the two revisions can. Consumed once, by the next `restore_main_view`.
 ---@field package _set_file_in_flight Future? # Active `_set_file` worker; queued callers await this so `await(set_file)` returns only after the latest pending file is opened.
 ---@field package _set_file_pending FileEntry? # Newest file queued while `_set_file_in_flight` is set; the worker picks it up before terminating.
@@ -70,6 +71,20 @@ function StandardView._rename_alias(from, to)
     return to.path
   end
   return nil
+end
+
+---Whether opening `to` after `from` steps to another revision of the same
+---file. Only such a step reveals the carried cursor: switching to another
+---file, or coming back to one, restores the cursor and leaves folds alone.
+---@param from FileEntry # The entry being left.
+---@param to FileEntry? # The entry being opened.
+---@param alias string? # From `_rename_alias`, or the path a caller followed the file to.
+---@return boolean
+function StandardView._is_revision_step(from, to, alias)
+  if not to or to == from then
+    return false
+  end
+  return to.path == from.path or alias ~= nil
 end
 
 ---StandardView constructor
@@ -125,7 +140,9 @@ function StandardView:init(opt)
       if not alias and target and target.path ~= cur_entry.path and self:has_carry_lnum(target) then
         alias = target.path
       end
-      self:snapshot_main_view(cur_entry.path, alias)
+      local reveal = self.steps_through_revisions
+        and StandardView._is_revision_step(cur_entry, target, alias)
+      self:snapshot_main_view(cur_entry.path, alias, reveal)
     end
   end)
 
@@ -149,6 +166,7 @@ end
 ---@field winview table # A `winsaveview()` dict.
 ---@field bufnr? integer # The buffer `winview` was captured in. Missing on a state restored from a session sidecar.
 ---@field bufname? string # The name `bufnr` carried at capture time.
+---@field reveal? boolean # Open the folds hiding the cursor on restore. Set only for a step to another revision of the same file. See `_is_revision_step`.
 
 ---@param winid integer
 ---@return StandardView.CarryState?
@@ -264,7 +282,8 @@ end
 ---@param path string repo-relative file path; the map key.
 ---@param alias? string A second key holding the same state, for a file the
 ---next entry lists under another name. See `_rename_alias`.
-function StandardView:snapshot_main_view(path, alias)
+---@param reveal? boolean See `StandardView.CarryState.reveal`.
+function StandardView:snapshot_main_view(path, alias, reveal)
   local layout = self.cur_layout
   local main = layout and layout:get_main_win()
   if not (main and main.id and api.nvim_win_is_valid(main.id)) then
@@ -273,6 +292,7 @@ function StandardView:snapshot_main_view(path, alias)
 
   local entry = capture_winview(main.id)
   if entry then
+    entry.reveal = reveal or nil
     self.cursor_map[path] = entry
     if alias and alias ~= path then
       self.cursor_map[alias] = entry
@@ -338,7 +358,9 @@ function StandardView:restore_main_view(path)
   local ok = apply_winview(win.id, target, lnum)
 
   if ok then
-    reveal_cursor_line(win.id)
+    if target.reveal then
+      reveal_cursor_line(win.id)
+    end
     self.cursor_map[path] = nil
   end
   return ok
