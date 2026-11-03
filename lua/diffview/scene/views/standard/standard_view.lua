@@ -84,6 +84,13 @@ function StandardView._is_revision_step(from, to, alias)
   if not to or to == from then
     return false
   end
+  -- `FileHistoryPanel:update_entries` (triggered by `R` or `FugitiveChanged`)
+  -- rebuilds entries from scratch, so a reopen of the same commit lands on a
+  -- fresh `FileEntry` for the same path. That's not a step through revisions;
+  -- the commit hash distinguishes it from a real step onto the next one.
+  if from.commit and to.commit and from.commit.hash == to.commit.hash then
+    return false
+  end
   return to.path == from.path or alias ~= nil
 end
 
@@ -293,6 +300,17 @@ function StandardView:snapshot_main_view(path, alias, reveal)
   local entry = capture_winview(main.id)
   if entry then
     entry.reveal = reveal or nil
+    -- A prior snapshot at `path` may have installed its state under an
+    -- alias this one doesn't share. Drop every key pointing to it before
+    -- the overwrite, so the orphaned alias can't replay a stale `reveal`.
+    local prev = self.cursor_map[path]
+    if prev then
+      for key, state in pairs(self.cursor_map) do
+        if state == prev then
+          self.cursor_map[key] = nil
+        end
+      end
+    end
     self.cursor_map[path] = entry
     if alias and alias ~= path then
       self.cursor_map[alias] = entry
@@ -361,7 +379,14 @@ function StandardView:restore_main_view(path)
     if target.reveal then
       reveal_cursor_line(win.id)
     end
-    self.cursor_map[path] = nil
+    -- `snapshot_main_view` can install the same state under both a path and
+    -- a rename alias; dropping only the consumed key would leave the other
+    -- to replay a stale `reveal` on a later open.
+    for key, state in pairs(self.cursor_map) do
+      if state == target then
+        self.cursor_map[key] = nil
+      end
+    end
   end
   return ok
 end

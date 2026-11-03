@@ -485,6 +485,13 @@ local function restore_file_history_entry(lib, entry)
   end
   local cursor_map = sanitize_cursor_map(entry.cursor_map)
   if cursor_map then
+    -- A restored session resumes a file-history browse the user was in the
+    -- middle of; the next open is a resume-step, so open folds around the
+    -- carried cursor just like live stepping does. The sidecar schema stays
+    -- bare (`sanitize_cursor_map`), so the flag is reapplied here.
+    for _, state in pairs(cursor_map) do
+      state.reveal = true
+    end
     view.cursor_map = cursor_map
   end
   local open_ok, open_err = pcall(view.open, view)

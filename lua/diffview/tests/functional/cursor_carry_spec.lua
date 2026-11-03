@@ -398,11 +398,47 @@ describe("diffview.standard_view carry snapshot/restore", function()
     assert.is_true(view:restore_main_view("file.txt"))
     eq(-1, fold_at_cursor(b_win))
   end)
+
+  -- `snapshot_main_view` installs one state under both `path` and `alias`.
+  -- Consuming either key must drop the other, so a later plain file switch
+  -- can't inherit the rename step's `reveal`.
+  it("drops the alias when the primary key is consumed", function()
+    local a_win = pool.open(body("body", 20))
+    local b_win = pool.open(body("body", 20))
+    local view = make_view(a_win, b_win)
+
+    view:snapshot_main_view("new.txt", "old.txt", true)
+    assert.is_true(view:restore_main_view("new.txt"))
+    eq(nil, view.cursor_map["old.txt"])
+  end)
+
+  it("drops the primary key when the alias is consumed", function()
+    local a_win = pool.open(body("body", 20))
+    local b_win = pool.open(body("body", 20))
+    local view = make_view(a_win, b_win)
+
+    view:snapshot_main_view("new.txt", "old.txt", true)
+    assert.is_true(view:restore_main_view("old.txt"))
+    eq(nil, view.cursor_map["new.txt"])
+  end)
+
+  -- A fresh snapshot at `path` must not inherit the previous snapshot's
+  -- unrelated alias; otherwise a cancelled rename step could leave its
+  -- `reveal` lurking on a key the next step never names.
+  it("drops a stale alias when the same path is re-snapshotted", function()
+    local a_win = pool.open(body("body", 20))
+    local b_win = pool.open(body("body", 20))
+    local view = make_view(a_win, b_win)
+
+    view:snapshot_main_view("new.txt", "old.txt", true)
+    view:snapshot_main_view("new.txt", nil, false)
+    eq(nil, view.cursor_map["old.txt"])
+  end)
 end)
 
 describe("diffview.standard_view _is_revision_step", function()
-  local function entry(path)
-    return { path = path }
+  local function entry(path, hash)
+    return { path = path, commit = hash and { hash = hash } or nil }
   end
 
   it("is a step when the arriving entry shows the same path", function()
@@ -413,6 +449,12 @@ describe("diffview.standard_view _is_revision_step", function()
     assert.is_true(StandardView._is_revision_step(entry("old.txt"), entry("new.txt"), "new.txt"))
   end)
 
+  it("is a step when the arriving entry targets a different commit", function()
+    assert.is_true(
+      StandardView._is_revision_step(entry("a.txt", "abc123"), entry("a.txt", "def456"), nil)
+    )
+  end)
+
   it("is not a step between two different files", function()
     assert.is_false(StandardView._is_revision_step(entry("a.txt"), entry("b.txt"), nil))
   end)
@@ -420,6 +462,14 @@ describe("diffview.standard_view _is_revision_step", function()
   it("is not a step when re-opening the entry being left", function()
     local e = entry("a.txt")
     assert.is_false(StandardView._is_revision_step(e, e, nil))
+  end)
+
+  -- A panel refresh (`R`, `FugitiveChanged`) rebuilds entries, so the current
+  -- commit's entry becomes a fresh object with the same path. Not a step.
+  it("is not a step when a rebuilt entry targets the same commit", function()
+    assert.is_false(
+      StandardView._is_revision_step(entry("a.txt", "abc123"), entry("a.txt", "abc123"), nil)
+    )
   end)
 
   it("is not a step without an arriving entry", function()

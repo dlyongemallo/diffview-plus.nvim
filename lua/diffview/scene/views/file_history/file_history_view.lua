@@ -32,6 +32,7 @@ local M = {}
 ---@field pinned_path? string # Working-tree path the b-window is pinned to. Seeded from `path_args[1]` for single-file pinning; the cursor follower updates it when the user highlights a file row in multi-file mode.
 ---@field _pinned_cursor_follow? CancellableFn # Debounced CursorMoved handler installed in pin_local mode; closed in `close()` to release the underlying uv timer.
 ---@field _pinned_b_files table<string, vcs.File> # View-owned cache of working-tree `vcs.File` instances keyed by path. Each pinned-mode b-window across the entire history reuses the entry for its path, so identity is stable across panel refreshes; entry destruction skips these files (see `Diff2*Pinned.shared_symbols`) and the view destroys them in `close()`.
+---@field steps_through_revisions true # Opts into fold reveal when stepping onto another revision of the file just left. See `StandardView._is_revision_step`.
 local FileHistoryView = oop.create_class("FileHistoryView", StandardView.__get())
 
 function FileHistoryView:init(opt)
