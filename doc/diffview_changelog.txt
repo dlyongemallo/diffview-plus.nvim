@@ -5,6 +5,30 @@ CHANGELOG
 
 NOTE: Breaking changes and notable feature additions are listed here.
 
+                                                *diffview.changelog-git-lfs*
+
+`:DiffviewOpen` on a git-LFS-tracked file used to show the raw pointer
+blob (version/oid/size, three lines) on both sides, which diffed
+consistently but was useless for comparing real contents. A per-file
+toggle bound to `gl` (|diffview-actions-toggle_lfs_smudge|) now runs
+`git lfs smudge` for the fetched sides, reloads the diff buffers with
+the real bytes, and replaces the pointer-level `+N -M` numstat with
+the content-level counts; `gl` again reverts to the pointer view.
+
+Smudging is opt-in per file because LFS objects can be very large.
+The toggle is only wired up for git repositories, and only when
+`git-lfs` is installed on the host.
+
+Objects larger than 2 MiB (per the pointer's declared size) are not
+smudged. Loading one would feed the full object into `vim.diff` on the
+main thread and freeze nvim; the ceiling defends against that on the
+multi-GB files LFS is commonly used for. Override at your own risk via
+`require("diffview.vcs.adapters.git.lfs").MAX_SMUDGE_BYTES`.
+
+A working-tree file left as a raw pointer (for example after
+`GIT_LFS_SKIP_SMUDGE=1` or a late `git lfs install`) is handled
+transparently on both the pointer and smudged paths.
+
                                                 *diffview.changelog-worktree-overview*
 
 The `:DiffviewWorktreeOverview` command opens a tabpage listing every

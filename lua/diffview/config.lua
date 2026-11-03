@@ -705,6 +705,7 @@ M.defaults = {
       -- The `view` bindings are active in the diff buffers, only when the current
       -- tabpage is a Diffview.
       { "n", "<C-w>T",      actions.open_in_new_tab,                { desc = "Open diffview in a new tab" } },
+      { "n", "gl",          actions.toggle_lfs_smudge,              { desc = "Toggle git-LFS smudge for the current file" } },
       { "n", "g<C-x>",      actions.cycle_layout,                   { desc = "Cycle through available layouts" } },
     }, actions.compat.fold_cmds),
     diff1 = utils.vec_join({
@@ -759,6 +760,7 @@ M.defaults = {
       { "n", "i",              actions.listing_style,                  { desc = "Toggle between 'list' and 'tree' views" } },
       { "n", "f",              actions.toggle_flatten_dirs,            { desc = "Flatten empty subdirectories in tree listing style" } },
       { "n", "R",              actions.refresh_files,                  { desc = "Update stats and entries in the file list" } },
+      { "n", "gl",             actions.toggle_lfs_smudge,              { desc = "Toggle git-LFS smudge for the entry under the cursor" } },
       { "n", "g<C-x>",         actions.cycle_layout,                   { desc = "Cycle available layouts" } },
       { "n", "[x",             actions.prev_conflict,                  { desc = "Go to the previous conflict" } },
       { "n", "]x",             actions.next_conflict,                  { desc = "Go to the next conflict" } },

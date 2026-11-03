@@ -807,6 +807,179 @@ return function(view)
       view.panel:render()
       view.panel:redraw()
     end,
+    toggle_lfs_smudge = async.void(function()
+      local GitAdapter = require("diffview.vcs.adapters.git").GitAdapter
+      if not view.adapter:instanceof(GitAdapter) then
+        utils.info("LFS smudge toggle is only supported for git repositories.")
+        return
+      end
+      if vim.fn.executable("git-lfs") ~= 1 then
+        utils.info("LFS smudge toggle requires `git-lfs` on PATH.")
+        return
+      end
+
+      local item = view:infer_cur_file()
+      if not item or type(item.collapsed) == "boolean" then
+        return
+      end
+      ---@cast item FileEntry
+
+      local git_lfs = require("diffview.vcs.adapters.git.lfs")
+      local pl = utils.path
+      -- For renames the historical blob lives at `oldpath`; `path_b`
+      -- is what the index tracks today.
+      local path_a = item.oldpath or item.path
+      local path_b = item.path
+      local tracked = await(git_lfs.cached_is_tracked(view.adapter, path_b))
+      if not tracked then
+        -- Historical attribute mismatch: `.gitattributes` doesn't
+        -- flag the file today, but a rev may still carry a pointer
+        -- blob (e.g., LFS tracking was removed since). Probe each
+        -- side's bytes; if at least one looks like a pointer, let
+        -- the toggle proceed.
+        local function side_is_pointer(p, rev)
+          if rev.type == RevType.LOCAL then
+            await(async.scheduler())
+            local abs = pl:absolute(p, view.adapter.ctx.toplevel)
+            -- Stat first so a huge newline-free payload can't be pulled
+            -- into a single Lua line by `readfile` before the size guard
+            -- runs; `readfile`'s line limit bounds line count, not bytes.
+            local stat = pl:stat(abs)
+            if stat and git_lfs.MAX_SMUDGE_BYTES > 0 and stat.size > git_lfs.MAX_SMUDGE_BYTES then
+              return false
+            end
+            local ok, sample = pcall(vim.fn.readfile, abs, "", 11)
+            return ok and git_lfs.is_pointer(sample)
+          end
+          local err, data = await(view.adapter:show(p, rev))
+          return not err and data and git_lfs.is_pointer(data)
+        end
+        if not (side_is_pointer(path_a, item.revs.a) or side_is_pointer(path_b, item.revs.b)) then
+          await(async.scheduler())
+          utils.info("Not an LFS-tracked file; smudge toggle is a no-op.")
+          return
+        end
+        -- Record the fallback decision so `create_buffer` (which
+        -- otherwise gates LFS routing on `_lfs_tracked()` alone) takes
+        -- the LFS path for every owned File. Without this, LOCAL would
+        -- read working-tree bytes raw while the other side rendered a
+        -- smudged pointer blob.
+        item._lfs_force_route = true
+      end
+      await(async.scheduler())
+
+      -- Toggling disposes every owned buffer, which force-deletes them;
+      -- any unsaved edits in a modifiable buffer (e.g., a pointer-view
+      -- stage-0 buffer the user has been typing in) would be silently
+      -- dropped. Refuse the toggle until those buffers are saved or
+      -- discarded.
+      for _, f in ipairs(utils.vec_join(item.layout:owned_files(), item._extra_owned)) do
+        if f.bufnr and api.nvim_buf_is_valid(f.bufnr) and vim.bo[f.bufnr].modified then
+          utils.info("LFS smudge toggle: buffer has unsaved changes. Save or discard first.")
+          return
+        end
+      end
+
+      -- Generation counter: a second `gl` press across any of the
+      -- awaits below bumps `_lfs_toggle_gen`; stale coroutines check
+      -- their captured `my_gen` on resume and bail without mutating.
+      item._lfs_toggle_gen = (item._lfs_toggle_gen or 0) + 1
+      local my_gen = item._lfs_toggle_gen
+
+      local new_state = not item.lfs_smudge
+      item.lfs_smudge = new_state
+
+      for _, f in ipairs(utils.vec_join(item.layout:owned_files(), item._extra_owned)) do
+        f.lfs_smudge = new_state
+        -- Propagate the attribute-mismatch override onto every owned
+        -- File so `create_buffer`'s LFS gate sees it. Set unconditionally
+        -- (not scoped to the `not tracked` branch) because the item flag
+        -- is set only in that branch, and new siblings produced during
+        -- the toggle must agree with the already-flipped ones.
+        f._lfs_force_route = item._lfs_force_route or nil
+        -- Clear cached `binary` so `create_buffer` re-decides for the new
+        -- display mode: a smudged binary LFS payload should route to the
+        -- null buffer, but the pointer-view (text) must not inherit a
+        -- stale `binary=true` from a prior smudged load.
+        f.binary = nil
+        f:dispose_buffer()
+      end
+
+      -- Toggle-on swaps pointer-level stats for content-level stats;
+      -- toggle-off restores the cached pointer stats.
+      if new_state then
+        if item.stats then
+          item._lfs_prev_stats = {
+            additions = item.stats.additions,
+            deletions = item.stats.deletions,
+          }
+        end
+        local stats, status =
+          await(git_lfs.recompute_stats(view.adapter, path_a, item.revs.a, path_b, item.revs.b))
+        -- `recompute_stats` may resume in libuv's fast event context
+        -- (its callbacks chain through `on_exit` handlers). Hop onto
+        -- nvim's scheduler before the revert branch below touches
+        -- `utils.warn` or buffer disposal, both of which call API
+        -- functions that raise `E5560` in fast events.
+        await(async.scheduler())
+        if item._lfs_toggle_gen == my_gen then
+          -- `recompute_stats` doubles as a pre-flight: if any side would
+          -- exceed the cap or failed to smudge, revert so a later
+          -- `use_entry` reload lands all sides in pointer mode together.
+          if status == "too-large" or status == "error" then
+            utils.warn(
+              status == "too-large"
+                  and "LFS smudge: at least one side exceeds MAX_SMUDGE_BYTES. Keeping pointer view."
+                or "LFS smudge: `git lfs smudge` failed on at least one side. Keeping pointer view."
+            )
+            item.lfs_smudge = false
+            for _, f in ipairs(utils.vec_join(item.layout:owned_files(), item._extra_owned)) do
+              f.lfs_smudge = false
+              f.binary = nil
+              f:dispose_buffer()
+            end
+            item._lfs_prev_stats = nil
+          elseif status == "binary" then
+            -- Smudge stays on so `create_buffer`'s post-smudge binary
+            -- check routes both sides to the null buffer; hold the raw
+            -- pointer-level numstat because `vim.diff` on binary bytes
+            -- would publish nonsense counts.
+            utils.info("LFS smudge: content is binary. Keeping pointer-level diff count.")
+          elseif stats and item.stats then
+            -- `item.stats` may have been nil at the pre-await capture
+            -- (first numstat refresh still in flight) and populated with
+            -- pointer values during the yield; snapshot them so toggle-
+            -- off can still restore.
+            if not item._lfs_prev_stats then
+              item._lfs_prev_stats = {
+                additions = item.stats.additions,
+                deletions = item.stats.deletions,
+              }
+            end
+            item.stats.additions = stats.additions
+            item.stats.deletions = stats.deletions
+          end
+        end
+      elseif item._lfs_prev_stats and item.stats then
+        item.stats.additions = item._lfs_prev_stats.additions
+        item.stats.deletions = item._lfs_prev_stats.deletions
+        item._lfs_prev_stats = nil
+      end
+
+      -- `recompute_stats` resumes in libuv's fast event context; hop
+      -- onto nvim's scheduler before touching API-level rendering.
+      await(async.scheduler())
+      if item._lfs_toggle_gen ~= my_gen then
+        return
+      end
+
+      view.panel:render()
+      view.panel:redraw()
+
+      if view.cur_entry == item and view.cur_layout then
+        await(view.cur_layout:use_entry(item))
+      end
+    end),
     toggle_untracked = function()
       -- Only applicable to working tree comparisons.
       if not (view.left.type == RevType.STAGE and view.right.type == RevType.LOCAL) then
