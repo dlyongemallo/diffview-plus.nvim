@@ -880,6 +880,26 @@ local update_files_impl = debounce.debounce_trailing(
                 old_file.stats = new_file.stats
               end
 
+              -- An LFS smudge toggle replaces `stats.{additions,deletions}`
+              -- with content-level counts. The merge above would clobber
+              -- those with the fresh raw pointer-level numstat while the
+              -- buffers remain smudged, so re-overwrite with the smudged
+              -- counts and promote the new raw numstat to the toggle-off
+              -- baseline. Content-level stats will drift from the actual
+              -- buffer contents until the next explicit toggle; refreshing
+              -- them in place would require re-running `recompute_stats`
+              -- here, which is out of scope.
+              if old_file.lfs_smudge and a_stats and old_file.stats then
+                old_file.stats.additions = a_stats.additions
+                old_file.stats.deletions = a_stats.deletions
+                if b_stats then
+                  old_file._lfs_prev_stats = {
+                    additions = b_stats.additions,
+                    deletions = b_stats.deletions,
+                  }
+                end
+              end
+
               old_file.status = new_file.status
               old_file:validate_stage_buffers(index_stat)
 
@@ -896,7 +916,18 @@ local update_files_impl = debounce.debounce_trailing(
               -- rewrite working-copy files (git, hg).
               for _, f in ipairs(old_file.layout:files()) do
                 if f.rev.type == RevType.LOCAL and f.bufnr and api.nvim_buf_is_valid(f.bufnr) then
-                  self.adapter:on_local_buffer_reused(f.bufnr)
+                  -- LOCAL buffers routed through `diffview://` (LFS
+                  -- pointer-view, or `_lfs_smudge_from_pointer`, or
+                  -- oversized-smudged fallback) are cached snapshots:
+                  -- `on_local_buffer_reused` doesn't repopulate them, so
+                  -- the pointer `oid`/`size` or the smudged content keeps
+                  -- showing stale after a working-tree edit. Dispose so
+                  -- the next `create_buffer` regenerates fresh bytes.
+                  if vim.b[f.bufnr].diffview_loaded then
+                    f:dispose_buffer()
+                  else
+                    self.adapter:on_local_buffer_reused(f.bufnr)
+                  end
                 end
               end
             end

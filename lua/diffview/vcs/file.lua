@@ -32,6 +32,10 @@ local M = {}
 ---@field commit Commit?
 ---@field symbol string?
 ---@field get_data git.FileDataProducer?
+---@field lfs_smudge boolean # When true, `produce_data` smudges LFS pointers so the buffer shows the real content. Default false.
+---@field _lfs_tracked_cached? boolean # Memoised result of the first `_lfs_tracked` call; nil means not yet probed. Read by `FileEntry:convert_layout` to pre-seed the cache on sibling instances.
+---@field _lfs_force_route? boolean # Set when `toggle_lfs_smudge`'s `side_is_pointer` fallback accepted a file not tracked by the current `.gitattributes` (historical attribute mismatch, rename to an untracked extension). Forces `create_buffer` to take the LFS routing path despite `_lfs_tracked()` returning false, so both sides diff consistently.
+---@field package _lfs_smudge_from_pointer? boolean # Set by `create_buffer` when the LOCAL working tree holds a raw pointer and the user asked to smudge; `produce_data` reads it to drive the smudge path and `create_buffer` reads it to pick the `[lfs-local-smudged]` buffer context.
 ---@field bufnr? integer
 ---@field binary boolean
 ---@field active boolean
@@ -59,6 +63,32 @@ File.created_bufs = {}
 ---Sentinel error value for cancelled buffer creation.
 File.CANCELLED = "diffview:cancelled"
 
+---Scan a bounded prefix of `lines` for a NUL byte, the classic marker git
+---itself uses to classify a blob as binary. Scanning a few KiB is enough:
+---true binary payloads carry NUL bytes densely, and the cap keeps the
+---check cheap on large smudged LFS objects.
+---@static
+---@param lines string[]?
+---@return boolean
+function File._lines_look_binary(lines)
+  if type(lines) ~= "table" then
+    return false
+  end
+  local budget = 8192
+  for _, line in ipairs(lines) do
+    if type(line) == "string" then
+      if line:find("\0", 1, true) then
+        return true
+      end
+      budget = budget - #line
+      if budget <= 0 then
+        return false
+      end
+    end
+  end
+  return false
+end
+
 ---@static
 File.bufopts = {
   buftype = "nowrite",
@@ -84,6 +114,15 @@ function File:init(opt)
   self.commit = opt.commit
   self.symbol = opt.symbol
   self.get_data = opt.get_data
+  self.lfs_smudge = not not opt.lfs_smudge
+  -- Pre-seed from a sibling (e.g. `convert_layout`) so the first
+  -- `_lfs_tracked` call skips the `git check-attr` shell-out.
+  if opt.lfs_tracked ~= nil then
+    self._lfs_tracked_cached = opt.lfs_tracked
+  end
+  if opt.lfs_force_route then
+    self._lfs_force_route = true
+  end
   self.active = true
   self.loaded = false
   self.ready = false
@@ -213,16 +252,155 @@ File.produce_data = async.wrap(function(self, callback)
     local pos = self.symbol == "a" and "left" or "right"
     local data = self.get_data(self.kind, self.path, pos)
     callback(nil, data)
-  else
-    local err, data = await(self.adapter:show(self.path, self.rev))
+    return
+  end
 
-    if err then
-      callback(err)
+  -- `create_buffer` routes LOCAL here for three LFS-tracked cases:
+  -- pointer-view (`lfs_smudge=false`), smudge-from-raw-pointer-on-disk
+  -- (`_lfs_smudge_from_pointer`), and oversized-smudged-on-disk fallback
+  -- (shown as pointer). The last two require inspecting the working-tree
+  -- bytes; the first can reuse the same probe to shortcut
+  -- `git lfs pointer` when disk already holds the pointer.
+  if self.rev.type == RevType.LOCAL then
+    local git_lfs = require("diffview.vcs.adapters.git.lfs")
+    await(async.scheduler())
+    -- Stat first so a huge, newline-free file can't be pulled into a
+    -- single Lua line by `readfile` before any guard runs. The 11-line
+    -- sample below bounds *line count* only; it is byte-safe only when
+    -- the file is already known to fit under `MAX_SMUDGE_BYTES`.
+    local stat = pl:stat(self.absolute_path)
+    local probe_too_big = stat
+      and git_lfs.MAX_SMUDGE_BYTES > 0
+      and stat.size > git_lfs.MAX_SMUDGE_BYTES
+    local sample_ok, sample
+    if not probe_too_big then
+      -- Reading up to 11 lines turns the line limit into a canary: a
+      -- pointer tops out at 10 lines by the spec (`is_pointer` enforces
+      -- that), so an 11-line sample proves the file is longer than any
+      -- pointer and must be real content.
+      sample_ok, sample = pcall(vim.fn.readfile, self.absolute_path, "", 11)
+    end
+    if self._lfs_smudge_from_pointer and sample_ok and git_lfs.is_pointer(sample) then
+      -- Smudge the on-disk pointer, subject to the same size cap as the
+      -- COMMIT path. The flag is only set when `create_buffer` saw a
+      -- pointer on disk; re-check here to handle the (narrow) race
+      -- where the working tree changed between the two probes.
+      local sz = git_lfs.parse_size(sample)
+      if git_lfs.MAX_SMUDGE_BYTES > 0 and sz and sz > git_lfs.MAX_SMUDGE_BYTES then
+        DiffviewGlobal.logger:warn(
+          fmt(
+            "[vcs.File:produce_data] LFS object for %s is %d bytes (> %d limit); showing pointer bytes. Raise `require('diffview.vcs.adapters.git.lfs').MAX_SMUDGE_BYTES` to override.",
+            self.path,
+            sz,
+            git_lfs.MAX_SMUDGE_BYTES
+          )
+        )
+        callback(nil, sample)
+        return
+      end
+      local serr, smudged = await(git_lfs.smudge(self.adapter, self.path, sample))
+      if smudged then
+        callback(nil, smudged)
+        return
+      end
+      DiffviewGlobal.logger:warn(
+        fmt(
+          "[vcs.File:produce_data] LFS smudge failed for %s; showing pointer bytes. Is `git-lfs` installed? Details: %s",
+          self.path,
+          serr and table.concat(serr, "\n") or "no output"
+        )
+      )
+      callback(nil, sample)
       return
     end
-
-    callback(nil, data)
+    -- Pointer-view (either `lfs_smudge=false` or oversized-smudged
+    -- fallback). If disk already holds the pointer, use its bytes
+    -- directly; otherwise synthesize via `git lfs pointer --file=`,
+    -- which streams through the file without buffering it.
+    if sample_ok and git_lfs.is_pointer(sample) then
+      callback(nil, sample)
+      return
+    end
+    local perr, pointer = await(git_lfs.working_tree_pointer(self.adapter, self.absolute_path))
+    if perr or not pointer then
+      callback(perr or { "working-tree pointer unavailable" })
+      return
+    end
+    callback(nil, pointer)
+    return
   end
+
+  local err, data = await(self.adapter:show(self.path, self.rev))
+
+  if err then
+    callback(err)
+    return
+  end
+
+  -- Opt-in pointer-to-content expansion: `git show` returns the ~130-byte
+  -- pointer by default, and the real content can be arbitrarily large.
+  if self.lfs_smudge then
+    local git_lfs = require("diffview.vcs.adapters.git.lfs")
+    if git_lfs.is_pointer(data) then
+      local sz = git_lfs.parse_size(data)
+      if git_lfs.MAX_SMUDGE_BYTES > 0 and sz and sz > git_lfs.MAX_SMUDGE_BYTES then
+        DiffviewGlobal.logger:warn(
+          fmt(
+            "[vcs.File:produce_data] LFS object for %s is %d bytes (> %d limit); showing pointer bytes. Raise `require('diffview.vcs.adapters.git.lfs').MAX_SMUDGE_BYTES` to override.",
+            self.path,
+            sz,
+            git_lfs.MAX_SMUDGE_BYTES
+          )
+        )
+      else
+        local serr, smudged = await(git_lfs.smudge(self.adapter, self.path, data))
+        if smudged then
+          data = smudged
+        else
+          DiffviewGlobal.logger:warn(
+            fmt(
+              "[vcs.File:produce_data] LFS smudge failed for %s; showing pointer bytes. Is `git-lfs` installed? Details: %s",
+              self.path,
+              serr and table.concat(serr, "\n") or "no output"
+            )
+          )
+        end
+      end
+    end
+  end
+
+  callback(nil, data)
+end)
+
+---Cached, lazy check: is this file configured as LFS-tracked (per the
+---index's `.gitattributes`) AND is `git-lfs` on `PATH`? Reporting tracked
+---without `git-lfs` would steer `create_buffer` into a pointer-mode path
+---whose `git lfs pointer` call would fail, leaving every LFS-tracked
+---LOCAL buffer unloadable. Non-git adapters never report tracked.
+---@private
+---@param self vcs.File
+---@param callback fun(tracked: boolean)
+File._lfs_tracked = async.wrap(function(self, callback)
+  if self._lfs_tracked_cached ~= nil then
+    callback(self._lfs_tracked_cached)
+    return
+  end
+  -- One `pcall` covers all failure modes: the git module failing to load,
+  -- an adapter that is not a class instance (e.g., `NULL_FILE`'s stub
+  -- table), and the `instanceof` call itself.
+  local ok, is_git = pcall(function()
+    local GitAdapter = require("diffview.vcs.adapters.git").GitAdapter
+    return self.adapter:instanceof(GitAdapter)
+  end)
+  if not (ok and is_git) or vim.fn.executable("git-lfs") ~= 1 then
+    self._lfs_tracked_cached = false
+    callback(false)
+    return
+  end
+  local git_lfs = require("diffview.vcs.adapters.git.lfs")
+  local tracked = await(git_lfs.cached_is_tracked(self.adapter, self.path))
+  self._lfs_tracked_cached = tracked
+  callback(tracked)
 end)
 
 ---@param self vcs.File
@@ -286,10 +464,96 @@ File.create_buffer = async.wrap(function(self, callback)
       error(File.CANCELLED)
     end
 
+    -- Decide the LFS routing for LOCAL first: pointer-view and
+    -- raw-pointer-on-disk cases need to route through `diffview://`
+    -- regardless of the working-tree bytes, so they must bypass the
+    -- generic binary short-circuit below. Without this, a checked-out
+    -- binary LFS object trips `is_binary` and nulls the LOCAL side,
+    -- leaving an asymmetric diff against the textual pointer on the
+    -- COMMIT side (and a cached `binary=true` the toggle can't clear).
+    local lfs_use_diffview_buf = false
+    if self.rev.type == RevType.LOCAL and not self.nulled then
+      local git_lfs = require("diffview.vcs.adapters.git.lfs")
+      local is_lfs = await(self:_lfs_tracked())
+      -- `_lfs_tracked` resumes in libuv's fast event context; hop onto
+      -- nvim's scheduler before any API-touching work below.
+      await(async.scheduler())
+      -- Re-check `active` after the two awaits: the file may have been
+      -- deactivated while `git check-attr` was in flight (navigation,
+      -- view teardown), and the subsequent binary check and buffer
+      -- allocation would otherwise be wasted and leave a half-built
+      -- diffview buffer for `find_named_buffer` to pick up.
+      if not self.active then
+        error(File.CANCELLED)
+      end
+      -- Reset per-call. `convert_layout` may hand a File back for a
+      -- second `create_buffer` run with the on-disk state changed
+      -- (e.g., smudged-vs-pointer); recompute from scratch each time.
+      self._lfs_smudge_from_pointer = nil
+      -- Also honour `_lfs_force_route`: `toggle_lfs_smudge` sets it when
+      -- the index's `.gitattributes` doesn't flag this path as LFS but a
+      -- side's blob is nevertheless a pointer (tracking removed since
+      -- the historical commit, rename to an untracked extension). Without
+      -- this gate, LOCAL would fall through to `_create_local_buffer` and
+      -- render raw working-tree bytes while the other side renders smudged
+      -- content, producing an asymmetric diff and bypassing the size cap.
+      if is_lfs or self._lfs_force_route then
+        if not self.lfs_smudge then
+          -- Pointer-view: route through `diffview://` so both sides diff
+          -- as pointers.
+          lfs_use_diffview_buf = true
+        else
+          -- `lfs_smudge=true`: inspect the working-tree bytes. There
+          -- are three cases:
+          --   (a) smudged content on disk, over `MAX_SMUDGE_BYTES`:
+          --       fall back to pointer view with a warning rather than
+          --       loading a multi-GB file into a regular buffer that
+          --       `vim.diff` would then stall nvim on.
+          --   (b) raw pointer on disk (`GIT_LFS_SKIP_SMUDGE=1` or a
+          --       late `git lfs install`): smudge it ourselves via the
+          --       `diffview://` path so LOCAL matches the COMMIT side.
+          --   (c) smudged content on disk, within the cap: let
+          --       `_create_local_buffer` open the file directly. The
+          --       generic binary check below still applies here, so a
+          --       binary payload under `diff_binaries=false` nulls out
+          --       as usual.
+          -- Stat first so `readfile` can't swallow a huge newline-free
+          -- payload before the size guard runs; `readfile`'s line limit
+          -- bounds line count, not bytes.
+          local stat = pl:stat(self.absolute_path)
+          if stat and git_lfs.MAX_SMUDGE_BYTES > 0 and stat.size > git_lfs.MAX_SMUDGE_BYTES then
+            DiffviewGlobal.logger:warn(
+              fmt(
+                "[vcs.File:create_buffer] LOCAL working-tree size for %s is %d bytes (> %d limit); showing pointer view. Raise `require('diffview.vcs.adapters.git.lfs').MAX_SMUDGE_BYTES` to override.",
+                self.path,
+                stat.size,
+                git_lfs.MAX_SMUDGE_BYTES
+              )
+            )
+            lfs_use_diffview_buf = true
+          else
+            local sample_ok, sample = pcall(vim.fn.readfile, self.absolute_path, "", 11)
+            if sample_ok and git_lfs.is_pointer(sample) then
+              lfs_use_diffview_buf = true
+              self._lfs_smudge_from_pointer = true
+            end
+          end
+        end
+      end
+    end
+
     -- Don't probe a nulled side: the result is unused (it routes to the NULL
     -- buffer below), and for a deleted file the gone `LOCAL` path makes
     -- `is_binary` false-positive, which would hide the deletion in inline.
-    if self.binary == nil and not self.nulled and not config.get_config().diff_binaries then
+    -- Also skip when the LOCAL side will route through `diffview://` for
+    -- LFS: the virtual buffer holds the pointer text, so the working-tree
+    -- bytes' binariness is irrelevant.
+    if
+      self.binary == nil
+      and not self.nulled
+      and not lfs_use_diffview_buf
+      and not config.get_config().diff_binaries
+    then
       self.binary = self.adapter:is_binary(self.path, self.rev)
     end
 
@@ -299,10 +563,12 @@ File.create_buffer = async.wrap(function(self, callback)
       return
     end
 
-    if self.rev.type == RevType.LOCAL then
+    if self.rev.type == RevType.LOCAL and not lfs_use_diffview_buf then
       self:_create_local_buffer()
       return
     end
+    -- Non-LOCAL, or LOCAL LFS via `diffview://`: fall through to the
+    -- `diffview://` buffer creation below.
 
     -- Unmerged entries may not have all stage blobs (e.g. delete/modify
     -- conflicts). Missing stage blobs should render as null buffers.
@@ -322,6 +588,19 @@ File.create_buffer = async.wrap(function(self, callback)
       context = fmt(":%d:", self.rev.stage)
     elseif self.rev.type == RevType.CUSTOM then
       context = "[custom]"
+    elseif self.rev.type == RevType.LOCAL then
+      -- Only reached for the LOCAL+LFS routes above. The two display
+      -- modes get distinct contexts so a stale buffer from the other
+      -- mode isn't accidentally reused via `find_named_buffer`.
+      context = self._lfs_smudge_from_pointer and "[lfs-local-smudged]" or "[lfs-local]"
+    end
+    -- Append an `[lfs-smudged]` suffix for non-LOCAL smudged buffers so
+    -- a parallel view (e.g., same commit+path in a second tab) with the
+    -- opposite smudge state doesn't collide via `find_named_buffer` and
+    -- return a buffer populated in the other mode. LOCAL already handled
+    -- its own split above.
+    if self.lfs_smudge and self.rev.type ~= RevType.LOCAL then
+      context = context .. " [lfs-smudged]"
     end
 
     local fullname = pl:join("diffview://", self.adapter.ctx.dir, context, self.path)
@@ -371,9 +650,39 @@ File.create_buffer = async.wrap(function(self, callback)
     if not api.nvim_buf_is_valid(self.bufnr) then
       error("The buffer has been invalidated!")
     end
+
+    -- Post-smudge binary check: the pre-await `is_binary` call inspected
+    -- the pointer blob (text) for non-LOCAL LFS-smudged sides and the
+    -- pointer-on-disk LOCAL case, so a binary smudged payload reaches
+    -- here undetected. For COMMIT/STAGE the pointer probe already set
+    -- `self.binary = false`, so gate on `not self.binary` (false or nil)
+    -- rather than nil only. Scan a bounded prefix of the content for
+    -- NUL and route to the shared null buffer when `diff_binaries=false`,
+    -- so a binary LFS object does not display as mojibake against the
+    -- other side.
+    if
+      not self.binary
+      and (self.lfs_smudge or self._lfs_smudge_from_pointer)
+      and not config.get_config().diff_binaries
+      and File._lines_look_binary(lines)
+    then
+      self.binary = true
+      pcall(api.nvim_buf_delete, self.bufnr, { force = true })
+      if self.bufnr == created_fresh_bufnr then
+        created_fresh_bufnr = nil
+      end
+      self.bufnr = File._get_null_buffer()
+      self:post_buf_created()
+      return
+    end
     local bufopts = vim.deepcopy(File.bufopts)
 
-    if self.rev.type == RevType.STAGE and self.rev.stage == 0 then
+    -- LFS-smudged stage-0 buffers stay read-only: `stage_index_file`
+    -- hashes the temp file via `git hash-object -w`, which bypasses the
+    -- LFS clean filter. Writing a smudged buffer would stage the full
+    -- payload as a regular blob instead of a pointer. Until that write
+    -- path is supported, suppress the modifiable/acwrite setup.
+    if self.rev.type == RevType.STAGE and self.rev.stage == 0 and not self.lfs_smudge then
       self.blob_hash = self.adapter:file_blob_hash(self.path)
       bufopts.modifiable = true
       bufopts.buftype = "acwrite"

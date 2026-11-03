@@ -57,6 +57,10 @@ end
 ---@field merge_ctx vcs.MergeContext?
 ---@field active boolean
 ---@field opened boolean
+---@field lfs_smudge boolean # Mirrors `lfs_smudge` on this entry's owned `vcs.File`s so the toggle persists across layout cycles.
+---@field _lfs_force_route? boolean # Mirrors `_lfs_force_route` on owned `vcs.File`s so the attribute-mismatch routing override survives `convert_layout` just like `lfs_smudge` does.
+---@field _lfs_prev_stats? GitStats # Pointer-level stats cached when `lfs_smudge` was last flipped on; restored on toggle-off so the file panel reverts cleanly.
+---@field _lfs_toggle_gen? integer # Monotonic counter bumped by every `gl` press; stale toggle coroutines compare against their captured generation on resume and bail without mutating.
 ---@field _extra_owned vcs.File[] # Files this entry owns that aren't reachable through `layout:owned_files()` (e.g. one-off nulled fallbacks built for a window whose symbol is in `shared_symbols`).
 local FileEntry = oop.create_class("FileEntry")
 
@@ -92,9 +96,7 @@ function FileEntry:init(opt)
   self.merge_ctx = opt.merge_ctx
   self.active = false
   self.opened = false
-  -- Files this FileEntry owns that aren't reachable through `layout:owned_files()`
-  -- (e.g. one-off nulled fallbacks for shared-symbol windows when the
-  -- shared instance can't be used). Populated by `with_layout`.
+  self.lfs_smudge = false
   self._extra_owned = opt._extra_owned or {}
 end
 
@@ -161,27 +163,35 @@ function FileEntry:convert_layout(target_layout)
     self.layout:teardown_render()
   end
 
-  local get_data
-
   -- Scan `owned_files()` rather than `files()` so non-window files
-  -- (e.g. `Diff1Inline.a_file`) still contribute a `get_data` producer
-  -- when converting away from a layout that owns them.
+  -- (e.g. `Diff1Inline.a_file`) still contribute a `get_data` producer.
+  -- Harvest resolved `_lfs_tracked_cached` per path so renames (where
+  -- a-side's `oldpath` differs from b-side's `path`) can't propagate
+  -- one side's value onto the other.
+  local get_data
+  local lfs_tracked_by_path = {}
   for _, file in ipairs(self.layout:owned_files()) do
-    if file.get_data then
+    if not get_data and file.get_data then
       get_data = file.get_data
-      break
+    end
+    if file._lfs_tracked_cached ~= nil then
+      lfs_tracked_by_path[file.path] = file._lfs_tracked_cached
     end
   end
 
   local function create_file(rev, symbol)
+    local path = symbol == "a" and self.oldpath or self.path
     return File({
       adapter = self.adapter,
-      path = symbol == "a" and self.oldpath or self.path,
+      path = path,
       kind = self.kind,
       commit = self.commit,
       get_data = get_data,
       rev = rev,
       nulled = try_should_null(target_layout, rev, self.status, symbol),
+      lfs_smudge = self.lfs_smudge,
+      lfs_tracked = lfs_tracked_by_path[path],
+      lfs_force_route = self._lfs_force_route,
     }) --[[@as vcs.File ]]
   end
 

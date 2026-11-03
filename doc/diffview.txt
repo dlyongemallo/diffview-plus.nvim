@@ -2374,6 +2374,28 @@ toggle_hide_selected                            *diffview-actions-toggle_hide_se
         Toggle whether reviewed (selected) files are hidden in the file
         panel. The selection state is preserved when files are hidden.
 
+toggle_lfs_smudge                               *diffview-actions-toggle_lfs_smudge*
+        Contexts: `diff_view`, `file_panel`
+
+        Toggle git-LFS smudging for the entry under the cursor. By
+        default an LFS-tracked file is shown as its raw pointer blob on
+        both sides. Pressing `gl` runs `git lfs smudge` for the fetched
+        sides, reloads the diff buffers with the real file bytes, and
+        replaces the pointer-level numstat with the content-level
+        counts. Press `gl` again to revert.
+
+        Smudging is opt-in because LFS objects can be very large. Only
+        supported on git repositories with `git-lfs` installed.
+
+        Objects larger than 2 MiB (per the pointer's `size` field) are
+        not smudged, since smudging blocks the editor for the duration.
+        Override the cap by setting
+        `require("diffview.vcs.adapters.git.lfs").MAX_SMUDGE_BYTES`
+        before toggling (zero or negative disables it).
+
+        A working-tree file that still holds the raw pointer (for
+        example after `GIT_LFS_SKIP_SMUDGE=1`) is handled transparently.
+
 toggle_select_entry                             *diffview-actions-toggle_select_entry*
         Contexts: `file_panel`
 
