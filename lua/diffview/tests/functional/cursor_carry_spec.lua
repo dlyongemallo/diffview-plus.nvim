@@ -357,4 +357,72 @@ describe("diffview.standard_view carry snapshot/restore", function()
     assert.is_true(view:restore_main_view("file.txt"))
     eq(12, api.nvim_win_get_cursor(b_win)[1])
   end)
+
+  ---Fold lines 5..15 of `win` and put the cursor inside the closed fold.
+  local function cursor_on_closed_fold(win)
+    api.nvim_win_call(win, function()
+      vim.wo.foldmethod = "manual"
+      vim.cmd("5,15fold")
+    end)
+    api.nvim_win_set_cursor(win, { 10, 0 })
+  end
+
+  local function fold_at_cursor(win)
+    return api.nvim_win_call(win, function()
+      return vim.fn.foldclosed(".")
+    end)
+  end
+
+  -- #371: staging moves to another file, and coming back to a file restores
+  -- its cursor. Neither is a step through one file's history.
+  it("leaves folds closed when restoring a file switched back to", function()
+    local a_win = pool.open(body("body", 20))
+    local b_win = pool.open(body("body", 20))
+    local view = make_view(a_win, b_win)
+
+    cursor_on_closed_fold(b_win)
+    view:snapshot_main_view("file.txt")
+
+    assert.is_true(view:restore_main_view("file.txt"))
+    eq(5, fold_at_cursor(b_win))
+  end)
+
+  it("opens the fold hiding a cursor carried to another revision", function()
+    local a_win = pool.open(body("body", 20))
+    local b_win = pool.open(body("body", 20))
+    local view = make_view(a_win, b_win)
+
+    cursor_on_closed_fold(b_win)
+    view:snapshot_main_view("file.txt", nil, true)
+
+    assert.is_true(view:restore_main_view("file.txt"))
+    eq(-1, fold_at_cursor(b_win))
+  end)
+end)
+
+describe("diffview.standard_view _is_revision_step", function()
+  local function entry(path)
+    return { path = path }
+  end
+
+  it("is a step when the arriving entry shows the same path", function()
+    assert.is_true(StandardView._is_revision_step(entry("a.txt"), entry("a.txt"), nil))
+  end)
+
+  it("is a step when a rename links the two paths", function()
+    assert.is_true(StandardView._is_revision_step(entry("old.txt"), entry("new.txt"), "new.txt"))
+  end)
+
+  it("is not a step between two different files", function()
+    assert.is_false(StandardView._is_revision_step(entry("a.txt"), entry("b.txt"), nil))
+  end)
+
+  it("is not a step when re-opening the entry being left", function()
+    local e = entry("a.txt")
+    assert.is_false(StandardView._is_revision_step(e, e, nil))
+  end)
+
+  it("is not a step without an arriving entry", function()
+    assert.is_false(StandardView._is_revision_step(entry("a.txt"), nil, nil))
+  end)
 end)
