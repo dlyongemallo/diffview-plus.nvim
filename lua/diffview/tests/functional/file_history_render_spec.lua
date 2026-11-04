@@ -828,3 +828,101 @@ describe("file_history state preservation", function()
     eq("c.txt", panel.cur_item[2].path)
   end)
 end)
+
+describe("highlight_item fold preservation", function()
+  local FileHistoryPanel =
+    require("diffview.scene.views.file_history.file_history_panel").FileHistoryPanel
+
+  ---Build a panel stub whose `highlight_item` records cursor placements.
+  ---`lstart` is fixed at 5 (0-based), so entry row = 6, file rows = 6 + i.
+  ---@param entry table
+  ---@return table panel
+  ---@return table[] calls  { win, pos } records of nvim_win_set_cursor
+  ---@return table item    the FileEntry stub to highlight
+  local function recording_panel(entry)
+    local item = vim.tbl_extend("force", fh_file("a.txt"), {
+      instanceof = function()
+        return false
+      end,
+    })
+    entry.files = { item }
+
+    local calls = {}
+    local panel = setmetatable({
+      single_file = false,
+      entries = { entry },
+      components = {
+        log = {
+          entries = {
+            { comp = { context = entry, lstart = 5 } },
+          },
+        },
+      },
+      is_open = function()
+        return true
+      end,
+      buf_loaded = function()
+        return true
+      end,
+      cursor_winids = function()
+        return { vim.api.nvim_get_current_win() }
+      end,
+      render = function()
+        error("render() must not run for a folded entry")
+      end,
+      redraw = function()
+        error("redraw() must not run for a folded entry")
+      end,
+    }, { __index = FileHistoryPanel })
+
+    local orig = vim.api.nvim_win_set_cursor
+    vim.api.nvim_win_set_cursor = function(win, pos)
+      calls[#calls + 1] = { win = win, pos = pos }
+    end
+    panel._restore_cursor_patch = function()
+      vim.api.nvim_win_set_cursor = orig
+    end
+
+    return panel, calls, item
+  end
+
+  it("does not expand a folded entry; parks the cursor on the entry row", function()
+    local entry = fh_entry("aaa", true, {})
+    local panel, calls, item = recording_panel(entry)
+
+    panel:highlight_item(item)
+    panel:_restore_cursor_patch()
+
+    -- The entry stays collapsed and the cursor lands on the entry row
+    -- (lstart 5 -> row 6), not on the file row.
+    eq(true, entry.folded)
+    eq(1, #calls)
+    eq(6, calls[1].pos[1])
+  end)
+
+  it("still lands on the file row for an expanded entry", function()
+    local entry = fh_entry("aaa", false, {})
+    local panel, calls, item = recording_panel(entry)
+
+    panel:highlight_item(item)
+    panel:_restore_cursor_patch()
+
+    -- First file of the entry: lstart 5 + i 1 + 1 = row 7.
+    eq(false, entry.folded)
+    eq(1, #calls)
+    eq(7, calls[1].pos[1])
+  end)
+
+  it("keeps single_file behaviour unchanged", function()
+    local entry = fh_entry("aaa", true, {})
+    local panel, calls, item = recording_panel(entry)
+    panel.single_file = true
+
+    panel:highlight_item(item)
+    panel:_restore_cursor_patch()
+
+    -- single_file mode: row = lstart + 1 regardless of fold state.
+    eq(1, #calls)
+    eq(6, calls[1].pos[1])
+  end)
+end)
