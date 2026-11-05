@@ -2403,7 +2403,10 @@ toggle_select_entry                             *diffview-actions-toggle_select_
         directory (tree view), selects all files under it if any are
         unselected, or deselects all if every file is already selected.
         Also works in visual mode to toggle all files in the selected
-        line range. When files are selected, `toggle_stage_entry` and
+        line range. After selecting, the cursor moves to the nearest
+        unselected file (the file below wins ties); after deselecting, it
+        stays on the deselected file. When files are selected,
+        `toggle_stage_entry` and
         `restore_entry` will operate on all selected files as a batch.
         Selection marks are shown using `signs.selected_file`,
         `signs.unselected_file`, `signs.selected_dir`,
