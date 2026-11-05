@@ -1812,10 +1812,12 @@ hooks                                           *diffview-config-hooks*
                             Whether the revision was resolved from HEAD
                             and follows it when HEAD moves.
                         • {path} (string)
-                          The file path, relative to {toplevel}.
-                        • {toplevel} (string)
-                          The root of the repository. Outside a repository,
-                          the directory {path} is relative to.
+                          The file path, relative to {toplevel} in a
+                          repository. Outside a repository ({adapter} is
+                          `nil`), the absolute path.
+                        • {toplevel} (string|nil)
+                          The root of the repository. `nil` outside a
+                          repository.
                         • {adapter} (string|nil)
                           The VCS adapter: `"git"`, `"hg"`, `"jj"` or `"p4"`.
                           It determines how {rev.commit} is interpreted.

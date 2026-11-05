@@ -659,8 +659,8 @@ M.defaults = {
   ---@field symbol string Layout-window symbol ("a"|"b"|"c"|"d").
   ---@field layout_name string Concrete layout, e.g. "diff2_horizontal".
   ---@field rev DiffviewDiffBufCtx.Rev The revision the buffer shows.
-  ---@field path string File path relative to `toplevel`.
-  ---@field toplevel string Root of the repository. Outside a repository, the directory `path` is relative to.
+  ---@field path string File path, relative to `toplevel` in a repository. Absolute outside a repository (`adapter` is nil).
+  ---@field toplevel? string Root of the repository. Nil outside a repository.
   ---@field adapter? "git"|"hg"|"jj"|"p4" VCS adapter, which determines how `rev.commit` is interpreted. Nil outside a repository (e.g. `:DiffviewDiffFiles`).
 
   ---@class DiffviewHooks

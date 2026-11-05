@@ -302,6 +302,9 @@ end
 function Window:diff_buf_ctx()
   local file = self.file
   local rev = file.rev
+  -- Views without a VCS (`NullAdapter`) have no adapter name and no repository
+  -- root; their file paths are absolute.
+  local adapter = file.adapter.config_key
 
   return {
     symbol = file.symbol,
@@ -313,8 +316,8 @@ function Window:diff_buf_ctx()
       tracks_head = rev.track_head,
     },
     path = file.path,
-    toplevel = file.adapter.ctx.toplevel,
-    adapter = file.adapter.config_key,
+    toplevel = adapter and file.adapter.ctx.toplevel,
+    adapter = adapter,
   }
 end
 

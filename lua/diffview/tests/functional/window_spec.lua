@@ -205,6 +205,20 @@ describe("diffview.scene.window", function()
 
       assert.same({ type = "STAGE", stage = 2, tracks_head = false }, win:diff_buf_ctx().rev)
     end)
+
+    it("leaves the repository fields unset outside a repository", function()
+      local win = make_window(mock_adapter(), {
+        path = "/tmp/a.txt",
+        symbol = "a",
+        rev = GitRev(RevType.LOCAL),
+      })
+      win.parent = { name = "diff2_horizontal" }
+
+      local ctx = win:diff_buf_ctx()
+      assert.is_nil(ctx.adapter)
+      assert.is_nil(ctx.toplevel)
+      assert.equals("/tmp/a.txt", ctx.path)
+    end)
   end)
 
   describe("open_file view.foldlevel", function()
