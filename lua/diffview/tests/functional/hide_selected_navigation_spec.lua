@@ -137,11 +137,8 @@ describe("reviewed-file navigation", function()
     eq(true, reconstrained)
   end)
 
-  it("opens the file selected by the panel after marking an entry", function()
-    local current = { path = "b.lua" }
-    local next_file = { path = "c.lua" }
-    local cursor_item = current
-    local selected = {}
+  ---Build a non-hide panel stub over `files` with the cursor on `cursor_item`.
+  local function make_view(files, cursor_item, selected)
     local panel = {
       hide_selected = false,
       is_open = function()
@@ -149,6 +146,9 @@ describe("reviewed-file navigation", function()
       end,
       get_item_at_cursor = function()
         return cursor_item
+      end,
+      ordered_file_list = function()
+        return files
       end,
       is_selected = function(_, file)
         return selected[file] == true
@@ -159,24 +159,49 @@ describe("reviewed-file navigation", function()
       select_file = function(_, file)
         selected[file] = true
       end,
-      highlight_next_file = function()
-        cursor_item = next_file
+      deselect_file = function(_, file)
+        selected[file] = nil
       end,
       render = function() end,
       redraw = function() end,
     }
-    local opened
-    local view = {
-      panel = panel,
-      set_file = function(_, file, focus, highlight)
-        opened = { file, focus, highlight }
-      end,
-    }
+    local view = { panel = panel }
+    view.set_file = function(_, file, focus, highlight)
+      view.opened = { file, focus, highlight }
+    end
+    return view
+  end
+
+  it("jumps to the nearest unmarked file after marking an entry", function()
+    local a, b, c, d = { path = "a" }, { path = "b" }, { path = "c" }, { path = "d" }
+    local selected = { [c] = true, [d] = true }
+    local view = make_view({ a, b, c, d }, b, selected)
 
     listeners_factory(view).toggle_select_entry()
 
-    eq(true, selected[current])
-    eq({ next_file, false, true }, opened)
+    eq(true, selected[b])
+    eq({ a, false, true }, view.opened)
+  end)
+
+  it("prefers the file below when marking with unmarked files on both sides", function()
+    local a, b, c = { path = "a" }, { path = "b" }, { path = "c" }
+    local selected = {}
+    local view = make_view({ a, b, c }, b, selected)
+
+    listeners_factory(view).toggle_select_entry()
+
+    eq({ c, false, true }, view.opened)
+  end)
+
+  it("stays on the file after unmarking it", function()
+    local a, b, c = { path = "a" }, { path = "b" }, { path = "c" }
+    local selected = { [a] = true, [b] = true, [c] = true }
+    local view = make_view({ a, b, c }, b, selected)
+
+    listeners_factory(view).toggle_select_entry()
+
+    eq(nil, selected[b])
+    eq({ b, false, true }, view.opened)
   end)
 
   it("opens the next visible file when H hides the active file", function()

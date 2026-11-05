@@ -35,6 +35,43 @@ local function find_visible_neighbor(files, anchor, excluded)
   end
 end
 
+---Find the unmarked file closest to the contiguous block of `anchors` in the
+---panel's file list, alternating down then up by increasing distance (ties
+---prefer down).
+---@param panel FilePanel
+---@param anchors FileEntry[]
+---@return FileEntry?
+local function find_nearest_unmarked(panel, anchors)
+  local files = panel:ordered_file_list()
+  local anchor_set = {} ---@type table<FileEntry, true>
+  for _, f in ipairs(anchors) do
+    anchor_set[f] = true
+  end
+  local lo, hi
+  for i, f in ipairs(files) do
+    if anchor_set[f] then
+      lo = lo or i
+      hi = i
+    end
+  end
+  if not lo then
+    return
+  end
+
+  for d = 1, #files do
+    local down, up = files[hi + d], files[lo - d]
+    if not down and not up then
+      return
+    end
+    if down and not panel:is_selected(down) then
+      return down
+    end
+    if up and not panel:is_selected(up) then
+      return up
+    end
+  end
+end
+
 ---Move the cursor to the panel's repository path when filtering leaves no
 ---selectable file rows.
 ---@param panel FilePanel
@@ -395,13 +432,11 @@ return function(view)
         view.panel:render()
         view.panel:redraw()
         if will_hide then
-          -- Viewing: advance to the next entry (established behaviour).
-          view.panel:highlight_next_file()
-          -- Open the entry the cursor landed on so the panel, cur_file, and
-          -- displayed diff stay in sync.
-          local next_item = view.panel:get_item_at_cursor()
-          if next_item and type(next_item.collapsed) ~= "boolean" then
-            view:set_file(next_item --[[@as FileEntry]], false, true)
+          -- Viewing: jump to the nearest still-unviewed file. set_file syncs
+          -- cur_file + highlight and keeps focus in the panel.
+          local nearest = find_nearest_unmarked(view.panel, leaves)
+          if nearest then
+            view:set_file(nearest, false, true)
           end
         else
           -- Unviewing: open the just-unmarked file in the diff and keep the
