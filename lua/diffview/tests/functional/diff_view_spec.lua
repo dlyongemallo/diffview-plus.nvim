@@ -595,10 +595,10 @@ describe("diffview.scene.views.diff.DiffView", function()
     end)
   end)
 
-  -- Companion to the close-gate fix: when `auto_close_on_empty` fires while a
-  -- stage buffer is dirty, the deferred close used to be lost. The
-  -- buf_write_post listener now picks it up after the user saves, so the
-  -- view actually closes instead of stranding the user in an empty view.
+  -- An `auto_close_on_empty` close aborts while a stage buffer is dirty. The
+  -- buf_write_post listener picks the deferred close up once the user saves,
+  -- so the policy closes the view rather than stranding the user in an empty
+  -- one.
   describe("auto_close_on_empty deferred-retry", function()
     local lib = require("diffview.lib")
     local listeners_factory = require("diffview.scene.views.diff.listeners")
@@ -611,11 +611,17 @@ describe("diffview.scene.views.diff.DiffView", function()
     local function make_stub_view(close_returns_ref)
       local stub
       local update_count = 0
+      local files = {
+        working = { { path = "foo.txt" } },
+        staged = {},
+        conflicting = {},
+      }
+      ---Mirrors `FileDict:len()`: the total across every bucket.
+      function files:len()
+        return #self.working + #self.staged + #self.conflicting
+      end
       stub = {
-        files = {
-          working = { { path = "foo.txt" } },
-          conflicting = {},
-        },
+        files = files,
         panel = {
           highlight_cur_file = function() end,
         },
@@ -644,8 +650,9 @@ describe("diffview.scene.views.diff.DiffView", function()
             callback()
           end
         end,
-        close = function()
+        close = function(_self, opts)
           stub.close_calls = stub.close_calls + 1
+          stub.close_opts = opts
           return close_returns_ref.value
         end,
         _modified_stage_paths = function()
@@ -691,12 +698,12 @@ describe("diffview.scene.views.diff.DiffView", function()
       config.setup(original_config)
     end)
 
-    -- Regression for the BufWritePost retry: the autocmd fires globally
-    -- (any buffer, any tab) without buffer context, so saving an unrelated
-    -- buffer used to re-run the close gate and re-show the warning while
-    -- the stage buffer was still dirty. The retry is now silent: it only
-    -- attempts the close when the gate would actually pass.
-    it("does not re-attempt close while stage buffers are still dirty", function()
+    -- BufWritePost fires globally (any buffer, any tab) without buffer
+    -- context, so an unrelated save reaches the retry while the stage buffer
+    -- is still dirty. The retry closes silently, leaving the unsaved-stage
+    -- report to the action that deferred the close instead of repeating it
+    -- on every save.
+    it("retries the close silently while stage buffers are still dirty", function()
       local original_dispose = lib.dispose_view
       local original_config = vim.deepcopy(config.get_config())
       config.setup({ auto_close_on_empty = true })
@@ -710,22 +717,23 @@ describe("diffview.scene.views.diff.DiffView", function()
 
       local listeners = listeners_factory(view_stub)
 
-      -- Defer once (dirty stage; close returns false).
+      -- Defer once: the action reports the dirty stage buffer itself, so
+      -- its close is not silent.
       listeners.stage_all()
       eq(1, view_stub.close_calls)
+      eq(nil, view_stub.close_opts.silent)
 
       -- Saving an unrelated buffer fires buf_write_post while the stage
-      -- buffer is still dirty: the retry should stay silent (no extra
-      -- close call, no extra warning).
-      listeners.buf_write_post()
-      eq(1, view_stub.close_calls)
-      eq(0, dispose_calls)
-
-      -- Once the stage buffer is saved, the gate would pass and the retry
-      -- runs the close.
-      close_returns.value = true
+      -- buffer is still dirty. The close aborts again, without reporting.
       listeners.buf_write_post()
       eq(2, view_stub.close_calls)
+      eq(true, view_stub.close_opts.silent)
+      eq(0, dispose_calls)
+
+      -- Once the stage buffer is saved, the gate passes and the retry closes.
+      close_returns.value = true
+      listeners.buf_write_post()
+      eq(3, view_stub.close_calls)
       eq(1, dispose_calls)
 
       lib.dispose_view = original_dispose
@@ -803,6 +811,266 @@ describe("diffview.scene.views.diff.DiffView", function()
 
       lib.dispose_view = original_dispose
       config.setup(original_config)
+    end)
+  end)
+
+  -- `files_updated` runs the `auto_close_on_empty` policy on every refresh, so
+  -- the view closes however it came to hold no files, and a comparison that is
+  -- empty from the start reports as much instead of opening.
+  describe("auto_close_on_empty on file updates", function()
+    local lib = require("diffview.lib")
+    local utils = require("diffview.utils")
+    local listeners_factory = require("diffview.scene.views.diff.listeners")
+
+    local original_dispose, original_info, saved_config
+    local dispose_calls, infos
+
+    before_each(function()
+      saved_config = vim.deepcopy(config.get_config())
+      config.setup({ auto_close_on_empty = true })
+
+      dispose_calls = 0
+      original_dispose = lib.dispose_view
+      lib.dispose_view = function()
+        dispose_calls = dispose_calls + 1
+      end
+
+      infos = {}
+      original_info = utils.info
+      utils.info = function(msg)
+        infos[#infos + 1] = msg
+      end
+    end)
+
+    after_each(function()
+      -- The policy runs off `vim.schedule`, so let anything still pending
+      -- land on this test's stubs rather than the next one's.
+      vim.wait(50)
+      lib.dispose_view = original_dispose
+      utils.info = original_info
+      config.setup(saved_config)
+    end)
+
+    ---Mock view exposing only what the listeners under test touch. `in_flight`
+    ---stands in for a running `set_file`; the close waits on it.
+    ---@param opts { has_staging: boolean, working?: table[], staged?: table[], conflicting?: table[], in_flight?: table }
+    local function make_stub_view(opts)
+      local files = {
+        working = opts.working or {},
+        staged = opts.staged or {},
+        conflicting = opts.conflicting or {},
+      }
+      ---Mirrors `FileDict:len()`: the total across every bucket.
+      function files:len()
+        return #self.working + #self.staged + #self.conflicting
+      end
+
+      local stub
+      stub = {
+        files = files,
+        close_calls = 0,
+        initialized = false,
+        tabpage = vim.api.nvim_get_current_tabpage(),
+        emitter = { emit = function() end },
+        panel = {
+          prune_selections = function() end,
+          highlight_cur_file = function() end,
+          is_focused = function()
+            return false
+          end,
+        },
+        adapter = {
+          has_staging = function()
+            return opts.has_staging
+          end,
+        },
+        set_file_in_flight = function()
+          return opts.in_flight
+        end,
+        _modified_stage_paths = function()
+          return {}
+        end,
+        set_file = function() end,
+        update_files = function(_self, _opts, callback)
+          if callback then
+            callback()
+          end
+        end,
+        close = function()
+          stub.close_calls = stub.close_calls + 1
+          return true
+        end,
+      }
+      return stub
+    end
+
+    ---Drive the main loop until `cond` holds. The policy runs on `vim.schedule`
+    ---and retries an in-flight `set_file` on a 20ms timer.
+    ---@param cond fun(): boolean
+    ---@param timeout? integer
+    ---@return boolean
+    local function wait_for(cond, timeout)
+      return vim.wait(timeout or 500, cond, 10)
+    end
+
+    ---@param stub table
+    local function closed(stub)
+      return function()
+        return stub.close_calls > 0
+      end
+    end
+
+    it("closes a view that holds no files", function()
+      local view_stub = make_stub_view({ has_staging = true })
+      local listeners = listeners_factory(view_stub)
+
+      listeners.files_updated()
+
+      eq(true, wait_for(closed(view_stub)))
+      eq(1, view_stub.close_calls)
+      eq(1, dispose_calls)
+    end)
+
+    it("reports an empty comparison on the first update only", function()
+      local view_stub = make_stub_view({ has_staging = true })
+      local listeners = listeners_factory(view_stub)
+
+      listeners.files_updated()
+      eq(true, wait_for(closed(view_stub)))
+      eq({ "Nothing to display." }, infos)
+
+      listeners.files_updated()
+      eq(
+        true,
+        wait_for(function()
+          return view_stub.close_calls > 1
+        end)
+      )
+      eq({ "Nothing to display." }, infos)
+    end)
+
+    it("keeps a view open while staged entries remain", function()
+      local view_stub = make_stub_view({
+        has_staging = true,
+        staged = { { path = "foo.txt" } },
+      })
+      local listeners = listeners_factory(view_stub)
+
+      listeners.files_updated()
+
+      eq(false, wait_for(closed(view_stub), 100))
+      eq(0, dispose_calls)
+      eq({}, infos)
+    end)
+
+    it("closes once a later refresh empties an open view", function()
+      local view_stub = make_stub_view({
+        has_staging = true,
+        working = { { path = "foo.txt" } },
+      })
+      local listeners = listeners_factory(view_stub)
+
+      listeners.files_updated()
+      eq(false, wait_for(closed(view_stub), 100))
+
+      -- A commit lands while the view is open: the refresh finds no files.
+      view_stub.files.working = {}
+      listeners.files_updated()
+
+      eq(true, wait_for(closed(view_stub)))
+      eq(1, dispose_calls)
+      -- The view held files when it opened, so nothing is reported.
+      eq({}, infos)
+    end)
+
+    it("waits for an in-flight set_file before closing", function()
+      local done = false
+      local view_stub = make_stub_view({
+        has_staging = true,
+        in_flight = {
+          is_done = function()
+            return done
+          end,
+        },
+      })
+      local listeners = listeners_factory(view_stub)
+
+      listeners.files_updated()
+      eq(false, wait_for(closed(view_stub), 100))
+
+      done = true
+      eq(true, wait_for(closed(view_stub)))
+      eq(1, dispose_calls)
+    end)
+
+    -- Index-less adapters (jj) keep a resolved file in `working` as the
+    -- resolution artifact, so the conflict-resolution action closes on the
+    -- `had_conflicts` latch rather than on emptiness. The latch stays set for
+    -- the life of the view, so every other trigger gates on emptiness.
+    describe("on an index-less adapter", function()
+      it("closes an empty comparison, which never surfaced conflicts", function()
+        local view_stub = make_stub_view({ has_staging = false })
+        local listeners = listeners_factory(view_stub)
+
+        listeners.files_updated()
+
+        eq(true, wait_for(closed(view_stub)))
+        eq(1, dispose_calls)
+        eq({ "Nothing to display." }, infos)
+      end)
+
+      it("stays open on a refresh once the conflicts are resolved", function()
+        local view_stub = make_stub_view({
+          has_staging = false,
+          working = { { path = "foo.txt" } },
+          conflicting = { { path = "foo.txt", kind = "conflicting" } },
+        })
+        local listeners = listeners_factory(view_stub)
+
+        -- Latch `had_conflicts`.
+        listeners.files_updated()
+        eq(false, wait_for(closed(view_stub), 100))
+
+        -- An unrelated refresh after the resolution: the resolved file is
+        -- still listed, so the view holds files and stays open.
+        view_stub.files.conflicting = {}
+        listeners.files_updated()
+
+        eq(false, wait_for(closed(view_stub), 100))
+        eq(0, dispose_calls)
+      end)
+
+      it("closes when the resolution action drains the last conflict", function()
+        local entry = { path = "foo.txt", kind = "conflicting" }
+        local view_stub = make_stub_view({
+          has_staging = false,
+          working = { { path = "foo.txt" } },
+          conflicting = { entry },
+        })
+        view_stub.right = { type = RevType.LOCAL }
+        view_stub.merge_ctx = {}
+        view_stub.cur_entry = entry
+        view_stub.update_files = function(_self, _opts, callback)
+          view_stub.files.conflicting = {}
+          if callback then
+            callback()
+          end
+        end
+
+        local listeners = listeners_factory(view_stub)
+
+        -- Latch `had_conflicts`.
+        listeners.files_updated()
+        eq(false, wait_for(closed(view_stub), 100))
+
+        -- Resolving the last conflict closes the view even though the
+        -- resolved file remains in `working`.
+        listeners.toggle_stage_entry()
+
+        eq(true, wait_for(closed(view_stub)))
+        eq(1, dispose_calls)
+        eq(1, #view_stub.files.working)
+      end)
     end)
   end)
 
