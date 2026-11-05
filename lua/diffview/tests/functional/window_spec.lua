@@ -176,6 +176,51 @@ describe("diffview.scene.window", function()
     end)
   end)
 
+  describe("diff_buf_ctx", function()
+    it("describes the buffer's position, revision and repository", function()
+      local adapter = mock_adapter({ config_key = "git" })
+      local win = make_window(adapter, {
+        path = "lua/foo.lua",
+        symbol = "a",
+        rev = GitRev(RevType.COMMIT, "abc1234", true),
+      })
+      win.parent = { name = "diff2_horizontal" }
+
+      assert.same({
+        symbol = "a",
+        layout_name = "diff2_horizontal",
+        rev = { type = "COMMIT", commit = "abc1234", tracks_head = true },
+        path = "lua/foo.lua",
+        toplevel = adapter.ctx.toplevel,
+        adapter = "git",
+      }, win:diff_buf_ctx())
+    end)
+
+    it("reports the stage of an index revision", function()
+      local win = make_window(mock_adapter(), {
+        symbol = "b",
+        rev = GitRev(RevType.STAGE, 2),
+      })
+      win.parent = { name = "diff3_mixed" }
+
+      assert.same({ type = "STAGE", stage = 2, tracks_head = false }, win:diff_buf_ctx().rev)
+    end)
+
+    it("leaves the repository fields unset outside a repository", function()
+      local win = make_window(mock_adapter(), {
+        path = "/tmp/a.txt",
+        symbol = "a",
+        rev = GitRev(RevType.LOCAL),
+      })
+      win.parent = { name = "diff2_horizontal" }
+
+      local ctx = win:diff_buf_ctx()
+      assert.is_nil(ctx.adapter)
+      assert.is_nil(ctx.toplevel)
+      assert.equals("/tmp/a.txt", ctx.path)
+    end)
+  end)
+
   describe("open_file view.foldlevel", function()
     -- Regression (#121): `view.foldlevel` must be copied onto the window's
     -- `foldlevel` option when the diff buffer is shown, even if the file's

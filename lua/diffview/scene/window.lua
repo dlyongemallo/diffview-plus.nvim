@@ -271,10 +271,7 @@ Window.open_file = async.void(function(self)
   self.emitter:emit("post_open")
 
   api.nvim_win_call(self.id, function()
-    DiffviewGlobal.emitter:emit("diff_buf_win_enter", self.file.bufnr, self.id, {
-      symbol = self.file.symbol,
-      layout_name = self.parent.name,
-    })
+    DiffviewGlobal.emitter:emit("diff_buf_win_enter", self.file.bufnr, self.id, self:diff_buf_ctx())
   end)
   ---@diagnostic enable: invisible
 end)
@@ -297,6 +294,31 @@ function Window:show_winbar_info()
   end
 
   return false
+end
+
+---Describe the diff buffer shown in this window, for the `diff_buf_read` and
+---`diff_buf_win_enter` hooks and their `User` autocmds.
+---@return DiffviewDiffBufCtx
+function Window:diff_buf_ctx()
+  local file = self.file
+  local rev = file.rev
+  -- Views without a VCS (`NullAdapter`) have no adapter name and no repository
+  -- root; their file paths are absolute.
+  local adapter = file.adapter.config_key
+
+  return {
+    symbol = file.symbol,
+    layout_name = self.parent.name,
+    rev = {
+      type = RevType[rev.type],
+      commit = rev.commit,
+      stage = rev.stage,
+      tracks_head = rev.track_head,
+    },
+    path = file.path,
+    toplevel = adapter and file.adapter.ctx.toplevel,
+    adapter = adapter,
+  }
 end
 
 function Window:is_nulled()
