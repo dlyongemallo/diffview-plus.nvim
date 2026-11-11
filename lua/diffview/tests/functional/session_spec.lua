@@ -744,8 +744,10 @@ describe("session save/restore", function()
       session.restore()
 
       assert.is_not_nil(captured)
+      -- A restored file-history view resumes a browse: the first open is
+      -- a step onto the carried cursor, so each entry carries `reveal`.
       assert.are.same({
-        ["src/main.lua"] = { winview = { lnum = 42, col = 3, topline = 10 } },
+        ["src/main.lua"] = { winview = { lnum = 42, col = 3, topline = 10 }, reveal = true },
       }, captured.cursor_map)
     end)
 
