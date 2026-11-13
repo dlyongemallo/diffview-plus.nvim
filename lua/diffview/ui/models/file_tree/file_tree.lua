@@ -19,6 +19,17 @@ local M = {}
 ---@field root Node
 local FileTree = oop.create_class("FileTree", Model)
 
+---Lookup key for a directory node. Directory keys carry a trailing separator
+---so that a directory never collides with a file of the same name under the
+---same parent. This happens when a diff contains both a path and entries
+---below it, e.g. a directory replaced by a symlink while the files it used to
+---contain are deleted.
+---@param name string
+---@return string
+local function dir_key(name)
+  return name .. "/"
+end
+
 ---FileTree constructor
 ---@param files FileEntry[]?
 function FileTree:init(files)
@@ -44,7 +55,9 @@ function FileTree:add_file_entry(file)
       path = pl:join(path, parts[i])
     end
 
-    if not cur_node.children[name] then
+    local dir_node = cur_node.children[dir_key(name)]
+
+    if not dir_node then
       ---@type DirData
       local dir_data = {
         name = name,
@@ -53,10 +66,10 @@ function FileTree:add_file_entry(file)
         collapsed = false,
         status = " ", -- updated later in FileTree:update_statuses()
       }
-      cur_node = cur_node:add_child(Node(name, dir_data))
-    else
-      cur_node = cur_node.children[name]
+      dir_node = cur_node:add_child(Node(name, dir_data, dir_key(name)))
     end
+
+    cur_node = dir_node
   end
 
   cur_node:add_child(Node(parts[#parts], file))
