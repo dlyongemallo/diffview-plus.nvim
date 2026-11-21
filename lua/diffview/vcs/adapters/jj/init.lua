@@ -74,10 +74,47 @@ local function get_toplevel(path)
   return out[1] and vim.trim(out[1])
 end
 
+---Find the root of the repository that directly contains `path`. The root is
+---the nearest directory, starting at `path` itself, that has `.jj` or `.git`.
+---@param path string
+---@return string? root
+local function nearest_repo_root(path)
+  local dir = pl:is_dir(path) and path or pl:parent(path)
+  -- `jj root` runs in the resolved directory, so resolve symlinks first.
+  dir = dir and (pl:realpath(dir) or dir)
+
+  while dir do
+    if uv.fs_stat(pl:join(dir, ".jj")) or uv.fs_stat(pl:join(dir, ".git")) then
+      return dir
+    end
+    -- The parent of the filesystem root is the root itself.
+    local parent = pl:parent(dir)
+    dir = parent ~= dir and parent or nil
+  end
+end
+
 ---@param top_indicators string[]
 ---@return string? err
 ---@return string toplevel
 function JjAdapter.find_toplevel(top_indicators)
+  -- `jj root` searches every ancestor for `.jj`. From a Git worktree, or from
+  -- a Git repository inside a Jujutsu repository, it reports the outer
+  -- repository, which does not track the files of the inner one. Decline when
+  -- the first indicator that is in a repository is in one without `.jj`, so
+  -- that the Git adapter takes it. A colocated repository has both `.jj` and
+  -- `.git` and stays eligible.
+  for _, indicator in ipairs(top_indicators) do
+    local root = nearest_repo_root(indicator)
+    if root then
+      if not uv.fs_stat(pl:join(root, ".jj")) then
+        local rel_path = pl:relative(root, ".")
+        local quoted = utils.str_quote(rel_path == "" and "." or rel_path)
+        return "Path is in a repo that Jujutsu does not manage: " .. quoted, ""
+      end
+      break
+    end
+  end
+
   return VCSAdapter.find_toplevel_with(top_indicators, get_toplevel, "Jujutsu")
 end
 
