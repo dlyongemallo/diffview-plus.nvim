@@ -319,6 +319,131 @@ describe("diffview.scene.views.worktree_overview hooks", function()
   )
 
   it(
+    "renders a status provider's segment list with per-segment highlights",
+    test_utils.async_test(function()
+      local repo = test_utils.make_repo()
+
+      -- A provider that returns a two-segment list: a coloured glyph and
+      -- a plain-text label. The buffer line must carry both fragments in
+      -- order, and the highlight on the glyph span must be the group the
+      -- provider named (not the status column's default).
+      overview.register_status_provider(function(_, done)
+        done({
+          { text = "●", hl = "DiffviewNonText" },
+          { text = "agy:neon:high" },
+        })
+      end)
+
+      local view
+      local ok, err = pcall(function()
+        view = WorktreeOverviewView({ adapter = make_adapter(repo) })
+        view:open()
+        async.await(async.schedule_now())
+        async.await(async.schedule_now())
+
+        local lines = vim.api.nvim_buf_get_lines(view.bufnr, 0, -1, false)
+        assert.equals(1, #lines)
+        local glyph_byte = lines[1]:find("●", 1, true)
+        assert.is_not_nil(glyph_byte, "glyph should appear on the row")
+        assert.is_not_nil(lines[1]:find("agy:neon:high", 1, true), "label should appear on the row")
+
+        -- The glyph's byte range must carry the provider-supplied highlight.
+        local marks = vim.api.nvim_buf_get_extmarks(
+          view.bufnr,
+          -1,
+          { 0, 0 },
+          { 0, -1 },
+          { details = true }
+        )
+        local glyph_byte0 = glyph_byte - 1
+        local matched = false
+        for _, mark in ipairs(marks) do
+          local col = mark[3]
+          local details = mark[4]
+          if col == glyph_byte0 and details and details.hl_group == "DiffviewNonText" then
+            matched = true
+            break
+          end
+        end
+        assert.is_true(matched, "expected an extmark at the glyph with hl_group = DiffviewNonText")
+      end)
+
+      overview.clear_status_providers()
+      test_utils.close_view(view)
+      test_utils.cleanup_repo(repo)
+      async.await(async.scheduler())
+
+      if not ok then
+        error(err)
+      end
+    end)
+  )
+
+  it(
+    "drops malformed segment highlight names to keep E5248 out of `:messages`",
+    test_utils.async_test(function()
+      local repo = test_utils.make_repo()
+
+      -- A buggy provider returns a segment whose `hl` has characters
+      -- `nvim_buf_set_extmark` rejects at render time with E5248 (space,
+      -- colon). The normaliser must drop the bad `hl` so the segment
+      -- inherits the status column's default highlight; the extmark at
+      -- the segment's byte range must not carry the invalid group name.
+      overview.register_status_provider(function(_, done)
+        done({
+          { text = "bad", hl = "has space" },
+          { text = "worse", hl = "foo:bar" },
+          { text = "ok", hl = "DiffviewNonText" },
+        })
+      end)
+
+      local view
+      local ok, err = pcall(function()
+        view = WorktreeOverviewView({ adapter = make_adapter(repo) })
+        view:open()
+        async.await(async.schedule_now())
+        async.await(async.schedule_now())
+
+        local lines = vim.api.nvim_buf_get_lines(view.bufnr, 0, -1, false)
+        assert.equals(1, #lines)
+        assert.is_not_nil(lines[1]:find("bad", 1, true), "segment text should still render")
+        assert.is_not_nil(lines[1]:find("worse", 1, true), "segment text should still render")
+
+        local marks = vim.api.nvim_buf_get_extmarks(
+          view.bufnr,
+          -1,
+          { 0, 0 },
+          { 0, -1 },
+          { details = true }
+        )
+        local saw_invalid = false
+        local saw_valid = false
+        for _, mark in ipairs(marks) do
+          local details = mark[4]
+          local group = details and details.hl_group
+          if group == "has space" or group == "foo:bar" then
+            saw_invalid = true
+          end
+          if group == "DiffviewNonText" then
+            saw_valid = true
+          end
+        end
+        assert.is_false(saw_invalid, "malformed hl names must not reach extmarks")
+        assert.is_true(saw_valid, "valid hl names must still apply")
+      end)
+
+      overview.clear_status_providers()
+      test_utils.close_view(view)
+      test_utils.cleanup_repo(repo)
+      async.await(async.scheduler())
+
+      if not ok then
+        error(err)
+      end
+    end)
+  )
+
+  it(
     "delivers the documented clean signature through the `hooks` config path",
     test_utils.async_test(function()
       local repo = test_utils.make_repo()
