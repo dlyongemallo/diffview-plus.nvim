@@ -6,6 +6,7 @@ local M = {}
 ---@class Node : diffview.Object
 ---@field parent Node
 ---@field name string
+---@field key string Lookup key among siblings. Defaults to `name`.
 ---@field data any
 ---@field children Node[]
 ---@field depth integer|nil
@@ -14,8 +15,10 @@ local Node = oop.create_class("Node")
 ---Node constructor
 ---@param name string
 ---@param data any|nil
-function Node:init(name, data)
+---@param key string|nil Lookup key among siblings. Defaults to `name`.
+function Node:init(name, data, key)
   self.name = name
+  self.key = key or name
   self.data = data
   self.children = {}
 
@@ -24,17 +27,17 @@ function Node:init(name, data)
   end
 end
 
----Adds a child if it doesn not already exist.
+---Adds a child if a child with the same key does not already exist.
 ---@param child Node
 ---@return Node
 function Node:add_child(child)
-  if not self.children[child.name] then
-    self.children[child.name] = child
+  if not self.children[child.key] then
+    self.children[child.key] = child
     self.children[#self.children + 1] = child
     child.parent = self
   end
 
-  return self.children[child.name]
+  return self.children[child.key]
 end
 
 ---@return boolean
