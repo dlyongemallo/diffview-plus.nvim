@@ -60,7 +60,13 @@ local HL = {
 
 local M = {}
 
----@alias WorktreeOverviewView.StatusProvider fun(entry: GitAdapter.WorktreeEntry, done: fun(result: string?))
+---@class WorktreeOverviewView.StatusSegment
+---@field text string # The run of text to render.
+---@field hl? string # Highlight group; defaults to the status column's `HL.status` when omitted.
+
+---@alias WorktreeOverviewView.StatusSegments WorktreeOverviewView.StatusSegment[]
+---@alias WorktreeOverviewView.StatusResult string | WorktreeOverviewView.StatusSegments | nil
+---@alias WorktreeOverviewView.StatusProvider fun(entry: GitAdapter.WorktreeEntry, done: fun(result: WorktreeOverviewView.StatusResult))
 
 ---Companion plugins (`diffview-coding-agents.nvim` and friends) register
 ---here to fill the overview's status column from external state. Multiple
@@ -72,8 +78,10 @@ local status_providers = {}
 
 ---Forward-declared so `WorktreeOverviewView:refresh_status` and
 ---`:refresh` can reach it; the definition sits further below next to the
----other provider plumbing.
----@type fun(entries: GitAdapter.WorktreeEntry[], done: fun(by_path: table<string, string>))
+---other provider plumbing. Results are stored as segment lists so each
+---row's render can push per-segment highlights (a provider that returned
+---a plain string is normalised into a single-segment list up front).
+---@type fun(entries: GitAdapter.WorktreeEntry[], done: fun(by_path: table<string, WorktreeOverviewView.StatusSegments>))
 local collect_statuses
 
 ---Upper bound on how long one `collect_statuses` batch waits for every
@@ -86,10 +94,17 @@ local STATUS_TIMEOUT_MS = 10000
 ---
 ---Contract:
 ---  - A provider is `fun(entry, done)` and MUST call `done(result)` exactly
----    once with its string or `nil`/`""` to leave the entry blank. Calling
----    `done` more than once is a no-op; failing to call it stalls the whole
----    batch until the timeout fires (currently 10s), at which point whatever
----    has arrived is published and late calls are dropped.
+---    once. `result` is one of:
+---      - `nil` or `""` to leave the entry blank;
+---      - a string, rendered with the status column's default highlight;
+---      - a list of `{ text = <string>, hl? = <highlight group> }` segments
+---        rendered in order, with each segment carrying its own highlight
+---        (a segment that omits `hl` inherits the default). Segments make
+---        it possible to colour a glyph differently from its label, e.g.,
+---        `{{text="●",hl="DiffviewNonText"},{text="agy:neon:high"}}`.
+---    Calling `done` more than once is a no-op; failing to call it stalls
+---    the whole batch until the timeout fires (currently 10s), at which
+---    point whatever has arrived is published and late calls are dropped.
 ---  - `done` may be called synchronously inside the provider body (for cached
 ---    or trivial results) or later from any libuv thread or scheduled
 ---    callback. The view runs every provider × entry pair concurrently, so
@@ -102,9 +117,15 @@ local STATUS_TIMEOUT_MS = 10000
 ---    editor is frozen while the provider body itself runs, so a provider
 ---    that blocks (whether or not it has already called `done`) stalls the
 ---    main loop until it returns.
----  - Returned strings must not contain `\n` or `\r`; the view defensively
----    collapses them to spaces to avoid E5086 at render time, but a provider
----    that passes multi-line output through will lose structure.
+---  - Segment text (and plain-string results) must not contain `\n` or `\r`;
+---    the view defensively collapses them to spaces to avoid E5086 at render
+---    time, but a provider that passes multi-line output through will lose
+---    structure.
+---  - A segment's `hl` must be a syntactically valid highlight group name
+---    (letters/digits/`_@.-`, not leading with a digit). A segment whose
+---    `hl` is malformed is rendered with the status column's default
+---    highlight instead; this keeps `nvim_buf_set_extmark`'s deferred
+---    E5248/E669 noise out of `:messages` on every refresh.
 ---  - Errors raised while invoking the provider are swallowed with `pcall`;
 ---    the row is treated as if `done(nil)` had been called, so a broken
 ---    companion plugin cannot take the overview down.
@@ -135,7 +156,7 @@ end
 ---@field bufnr integer?
 ---@field winid integer?
 ---@field render_data RenderData?
----@field _status_by_path? table<string, string> # `refresh` resolves each row's status column into this map so `render` reads strings instead of calling providers in its hot path.
+---@field _status_by_path? table<string, WorktreeOverviewView.StatusSegments> # `refresh` resolves each row's status column into this map so `render` reads segment lists instead of calling providers in its hot path.
 ---@field _status_epoch? integer # Monotonic counter. Each `refresh`/`refresh_status` increments it before kicking off `collect_statuses`; a batch whose epoch no longer matches is a stale result from an earlier call and is dropped.
 ---@field _on_status_refresh? fun() # Handler we installed on `DiffviewGlobal.emitter` for `refresh_worktree_overview_status`.
 ---@field _spinner_timer uv_timer_t?
@@ -507,24 +528,77 @@ function WorktreeOverviewView:refresh()
   end)
 end
 
+---Highlight group names that pass `nvim_buf_set_extmark` without
+---emitting E5248/E669 at render time: letters, digits, `_`, `@`, `.`,
+---`-`; must not start with a digit. The render path does not `pcall`
+---around extmark creation, and those vim errors fire outside the
+---provider's own `pcall`, so an unvalidated `hl` from a buggy provider
+---would spam `:messages` on every refresh.
+---@param name string
+---@return boolean
+local function is_valid_hl_group_name(name)
+  return name:match("^[%a_@.%-][%w_@.%-]*$") ~= nil
+end
+
+---Normalise a provider's `done(result)` payload to a segment list (or
+---nil to skip). A plain string becomes a single-segment list; a segment
+---list is cleaned up in place (drop empty segments, flatten newlines,
+---drop malformed highlight names).
+---@param result WorktreeOverviewView.StatusResult
+---@return WorktreeOverviewView.StatusSegments?
+local function normalize_status_result(result)
+  -- `nvim_buf_set_lines` rejects any embedded `\n` with E5086. Flatten
+  -- `\r` and `\n` to spaces defensively so a provider that leaks a
+  -- trailing newline from a shell call, or returns a multi-line
+  -- summary, cannot crash the render.
+  if type(result) == "string" then
+    if result == "" then
+      return nil
+    end
+    return { { text = (result:gsub("[\r\n]+", " ")) } }
+  end
+  if type(result) ~= "table" then
+    return nil
+  end
+  local segments = {}
+  for _, seg in ipairs(result) do
+    if type(seg) == "table" and type(seg.text) == "string" and seg.text ~= "" then
+      local text = seg.text:gsub("[\r\n]+", " ")
+      local hl = nil
+      if type(seg.hl) == "string" and is_valid_hl_group_name(seg.hl) then
+        hl = seg.hl
+      end
+      segments[#segments + 1] = { text = text, hl = hl }
+    end
+  end
+  if #segments == 0 then
+    return nil
+  end
+  return segments
+end
+
 ---Run every registered status provider against each entry concurrently and
 ---call `done(by_path)` once the batch has settled. The batch settles when
 ---every provider × entry pair reports a result, OR when `STATUS_TIMEOUT_MS`
 ---has elapsed; late reports after that are dropped on the floor.
 ---
----`by_path[path]` is the joined, newline-sanitized status string for each
----entry (empty string when no provider contributed a non-empty result).
+---`by_path[path]` is the concatenated segment list for each entry (empty
+---list when no provider contributed a non-empty result). Each segment is
+---`{ text = <string>, hl? = <group> }`; multi-provider results are joined
+---with a text-only `" "` separator segment so the visual gap matches the
+---plain-string join used before the segment contract existed.
+---
 ---Provider invocation is pcall-wrapped: a provider that errors synchronously
 ---is treated as if it had called `done(nil)` and never stalls the batch.
 ---Multiple `done` calls from the same provider are ignored.
 ---@param entries GitAdapter.WorktreeEntry[]
----@param done fun(by_path: table<string, string>)
+---@param done fun(by_path: table<string, WorktreeOverviewView.StatusSegments>)
 function collect_statuses(entries, done)
   local by_path = {}
   local pending = #entries * #status_providers
   if pending == 0 then
     for _, e in ipairs(entries) do
-      by_path[e.path] = ""
+      by_path[e.path] = {}
     end
     done(by_path)
     return
@@ -552,14 +626,23 @@ function collect_statuses(entries, done)
     end
     for _, e in ipairs(entries) do
       local slots = slots_by_path[e.path]
-      local parts = {}
+      -- Flatten each entry's per-provider segment lists into a single
+      -- segment stream, inserting a space-only separator segment between
+      -- consecutive providers so the visual gap matches the plain-string
+      -- `" "` join we used before.
+      local out = {}
       for i = 1, n_providers do
-        local v = slots[i]
-        if v then
-          parts[#parts + 1] = v
+        local segs = slots[i]
+        if segs then
+          if #out > 0 then
+            out[#out + 1] = { text = " " }
+          end
+          for _, seg in ipairs(segs) do
+            out[#out + 1] = seg
+          end
         end
       end
-      by_path[e.path] = table.concat(parts, " ")
+      by_path[e.path] = out
     end
     done(by_path)
   end
@@ -568,12 +651,9 @@ function collect_statuses(entries, done)
     if settled then
       return
     end
-    if type(result) == "string" and result ~= "" then
-      -- `nvim_buf_set_lines` rejects any embedded `\n` with E5086. Flatten
-      -- `\r` and `\n` to spaces defensively so a provider that leaks a
-      -- trailing newline from a shell call, or returns a multi-line
-      -- summary, cannot crash the render.
-      slots_by_path[path][idx] = result:gsub("[\r\n]+", " ")
+    local segments = normalize_status_result(result)
+    if segments then
+      slots_by_path[path][idx] = segments
     end
     pending = pending - 1
     if pending == 0 then
@@ -679,7 +759,7 @@ end
 ---`status_by_path` (nil when no status provider is registered) and the
 ---status column is sized to the widest resolved string across entries.
 ---@param entries GitAdapter.WorktreeEntry[]
----@param status_by_path? table<string, string>
+---@param status_by_path? table<string, WorktreeOverviewView.StatusSegments>
 ---@return table
 local function compute_widths(entries, status_by_path)
   local w = {
@@ -698,8 +778,14 @@ local function compute_widths(entries, status_by_path)
     local label = branch_label(e, false)
     w.branch = math.max(w.branch, vim.fn.strdisplaywidth(label))
     if status_by_path then
-      local s = status_by_path[e.path] or ""
-      w.status = math.max(w.status, vim.fn.strdisplaywidth(s))
+      local segments = status_by_path[e.path]
+      local text = ""
+      if segments then
+        for _, seg in ipairs(segments) do
+          text = text .. seg.text
+        end
+      end
+      w.status = math.max(w.status, vim.fn.strdisplaywidth(text))
     end
     if e.stats then
       w.ahead = math.max(w.ahead, #tostring(e.stats.ahead))
@@ -924,10 +1010,15 @@ function WorktreeOverviewView:render()
     if has_status then
       -- Resolved in `refresh`; the nil fallback covers a re-render
       -- after a transient `worktree_list` failure that returned before
-      -- the map was populated.
-      local status = (self._status_by_path or {})[e.path] or ""
-      push(ctx, status, HL.status)
-      pad(ctx, w.status - vim.fn.strdisplaywidth(status))
+      -- the map was populated. Each segment carries its own highlight
+      -- so a provider can colour a glyph differently from its label.
+      local segments = (self._status_by_path or {})[e.path] or {}
+      local total = ""
+      for _, seg in ipairs(segments) do
+        push(ctx, seg.text, seg.hl or HL.status)
+        total = total .. seg.text
+      end
+      pad(ctx, w.status - vim.fn.strdisplaywidth(total))
       push(ctx, "  ")
     end
 
